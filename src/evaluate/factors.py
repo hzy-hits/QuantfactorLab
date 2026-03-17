@@ -126,11 +126,12 @@ def compute_all_factors(prices_df: pd.DataFrame,
         vol_ratio = compute_volume_ratio(volumes)
         squeeze = compute_squeeze(log_rets)
 
-        # Reversion score (same as pipeline)
-        rsi_extreme = np.abs(rsi - 50) / 50
-        bb_extreme = np.abs(bb - 0.5) * 2
-        ma_extreme = np.minimum(np.abs(ma20) / 0.10, 1.0)  # 10% = max
-        reversion = 0.35 * np.nan_to_num(rsi_extreme) + 0.35 * np.nan_to_num(bb_extreme) + 0.30 * np.nan_to_num(ma_extreme)
+        # Signed reversion score [-1, +1]
+        # Positive = oversold (expect up), Negative = overbought (expect down)
+        rsi_signal = np.nan_to_num((50.0 - rsi) / 50.0)       # +1 at RSI=0, -1 at RSI=100
+        bb_signal = np.nan_to_num((0.5 - bb) * 2.0)            # +1 at lower band, -1 at upper
+        ma_signal = np.nan_to_num(-ma20 / 0.10)                # positive when below MA
+        reversion = np.clip(0.35 * rsi_signal + 0.35 * bb_signal + 0.30 * ma_signal, -1, 1)
 
         # 5D return (for momentum)
         ret_5d = np.full(len(closes), np.nan)
