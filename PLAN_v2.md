@@ -240,16 +240,32 @@ CREATE TABLE factor_registry (
 );
 ```
 
-**Lifecycle 修订 (Codex 建议)**:
+**Lifecycle — 30 天短寿命因子模型**:
+
+因子寿命预期 ~30 天。不是"找一个因子用几年"，而是"因子工厂持续产出"。
+
 ```
 candidate → promoted → watchlist → retired
                 ↑           │
                 └───────────┘ (recover if IC rebounds)
 
-promoted → watchlist: rolling 60d IC < 0.01 for 10 days
-watchlist → retired:  rolling 60d IC < 0.005 for 20 days
-watchlist → promoted: rolling 60d IC > 0.015 for 10 days (recovery)
+promoted → watchlist: rolling 20d IC < 0.005 for 5 days (快速降级)
+watchlist → retired:  5 天内 IC 没恢复 > 0.01 (快速退休)
+watchlist → promoted: 5 天内 IC 恢复 > 0.01 (允许回来)
+
+从上线到退休: 最快 10 天，典型 20-30 天，超过 60 天算长寿
+
+运营节奏:
+  每周: Agent 跑 1-2 个 session，发现 2-3 个新因子
+  每天: 活跃因子 5-10 个，retire_check 自动淘汰衰减的
+  每月: 回顾存活率、平均寿命、IC 衰减曲线
 ```
+
+**因子库规模**: 见 FACTORS.md (91 个经典因子 + 35 个算子)
+- MVP (P0): 34 个基础因子 + 35 算子
+- P1: +32 (资金面+估值+微观结构)
+- P2: +55 (时间效应+滚动窗口变体)
+
 
 **Pipeline injection 修订 (Codex 建议)**:
 ```
