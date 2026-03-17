@@ -24,7 +24,7 @@ def compute_rsi(closes: np.ndarray, period: int = 14) -> np.ndarray:
         avg_gain = (avg_gain * (period - 1) + gain[i]) / period
         avg_loss = (avg_loss * (period - 1) + loss[i]) / period
         if avg_loss < 1e-10:
-            rsi[i + 1] = 100.0
+            rsi[i + 1] = np.nan
         else:
             rs = avg_gain / avg_loss
             rsi[i + 1] = 100.0 - 100.0 / (1.0 + rs)

@@ -12,25 +12,39 @@ def factor_correlation_matrix(factor_df: pd.DataFrame,
     For each day, compute rank corr between every pair of factors.
     Average across all days.
     """
-    corr_sums = np.zeros((len(factor_cols), len(factor_cols)))
-    n_days = 0
+    n_factors = len(factor_cols)
+    corr_sums = np.zeros((n_factors, n_factors))
+    pair_counts = np.zeros((n_factors, n_factors))
 
     for dt, group in factor_df.groupby(date_col):
         if len(group) < 20:
             continue
 
-        ranks = group[factor_cols].rank(method="average")
-        day_corr = ranks.corr(method="spearman").values
+        for i in range(n_factors):
+            for j in range(i, n_factors):
+                if i == j:
+                    corr_sums[i, j] += 1.0
+                    pair_counts[i, j] += 1
+                    continue
+                pair = group[[factor_cols[i], factor_cols[j]]].dropna()
+                if len(pair) < 10:
+                    continue
+                rho = pair.rank(method="average").corr(method="spearman").iloc[0, 1]
+                if not np.isnan(rho):
+                    corr_sums[i, j] += rho
+                    corr_sums[j, i] += rho
+                    pair_counts[i, j] += 1
+                    pair_counts[j, i] += 1
 
-        if not np.any(np.isnan(day_corr)):
-            corr_sums += day_corr
-            n_days += 1
+    # Fill diagonal counts
+    for i in range(n_factors):
+        if pair_counts[i, i] == 0:
+            pair_counts[i, i] = 1  # avoid division by zero on diagonal
 
-    if n_days == 0:
-        return pd.DataFrame(np.eye(len(factor_cols)),
-                            index=factor_cols, columns=factor_cols)
+    # Average: element-wise divide, default to 0 where no data
+    with np.errstate(divide="ignore", invalid="ignore"):
+        avg_corr = np.where(pair_counts > 0, corr_sums / pair_counts, 0.0)
 
-    avg_corr = corr_sums / n_days
     return pd.DataFrame(avg_corr, index=factor_cols, columns=factor_cols).round(3)
 
 

@@ -32,6 +32,11 @@ def compute_quintile_returns(factor_values: pd.Series, forward_returns: pd.Serie
         group = group.copy()
         group["quintile"] = pd.qcut(group["factor"], n_groups, labels=False, duplicates="drop") + 1
 
+        # If duplicates caused fewer bins than requested, skip this day
+        actual_bins = group["quintile"].nunique()
+        if actual_bins < n_groups:
+            continue
+
         for q in range(1, n_groups + 1):
             qr = group[group["quintile"] == q]["fwd_ret"].mean()
             if not np.isnan(qr):
