@@ -23,6 +23,8 @@ from src.evaluate.factors import compute_all_factors
 from src.evaluate.ic import compute_ic_series, ic_summary, ic_by_regime
 from src.evaluate.quintile import compute_quintile_returns
 from src.evaluate.correlation import factor_correlation_matrix, find_redundant_pairs
+from src.evaluate.turnover import compute_turnover
+from src.evaluate.rolling_ic import compute_rolling_ic, compute_ic_trend
 
 
 # Market configs
@@ -111,8 +113,8 @@ def run(market: str, output_path: str | None = None):
     # Summary table
     report_lines.append("## Summary")
     report_lines.append("")
-    report_lines.append("| Factor | IC | IC_IR | IC>0% | Q5-Q1 | Mono | Status |")
-    report_lines.append("|--------|-----|-------|-------|-------|------|--------|")
+    report_lines.append("| Factor | IC | IC_IR | IC>0% | Q5-Q1 | Mono | Turnover/d | IC Trend | Status |")
+    report_lines.append("|--------|-----|-------|-------|-------|------|------------|----------|--------|")
 
     factor_results = {}
     for factor_name in FACTORS_TO_EVALUATE:
@@ -149,6 +151,19 @@ def run(market: str, output_path: str | None = None):
         print(f"  Quintiles: {q['quintile_returns']}")
         print(f"  Long-Short: {q['long_short_pct']}%, Monotonicity: {q['monotonicity']}")
 
+        # Turnover
+        turnover = compute_turnover(
+            valid[factor_name], valid[cfg["date_col"]], valid[cfg["sym_col"]]
+        )
+        print(f"  Turnover: daily={turnover['avg_daily']}, monthly={turnover['avg_monthly']}, "
+              f"n_days={turnover['n_days']}")
+
+        # Rolling IC & IC trend
+        rolling_ic_df = compute_rolling_ic(ic_series)
+        ic_trend = compute_ic_trend(ic_series)
+        print(f"  IC trend: slope/yr={ic_trend['slope_per_year']}, R2={ic_trend['r_squared']}, "
+              f"verdict={ic_trend['verdict']}")
+
         # Status
         ic_ok = ic_stats["ic_mean"] is not None and abs(ic_stats["ic_mean"]) > 0.02
         icir_ok = ic_stats["ic_ir"] is not None and abs(ic_stats["ic_ir"]) > 0.3
@@ -158,13 +173,17 @@ def run(market: str, output_path: str | None = None):
         report_lines.append(
             f"| {factor_name} | {ic_stats['ic_mean']} | {ic_stats['ic_ir']} | "
             f"{ic_stats['ic_positive_pct']}% | {q['long_short_pct']}% | "
-            f"{q['monotonicity']} | {status} |"
+            f"{q['monotonicity']} | {turnover['avg_daily']} | "
+            f"{ic_trend['verdict']} | {status} |"
         )
 
         factor_results[factor_name] = {
             "ic": ic_stats,
             "regime_ic": regime_ic,
             "quintile": q,
+            "turnover": turnover,
+            "rolling_ic": rolling_ic_df,
+            "ic_trend": ic_trend,
             "status": status,
         }
 
@@ -219,6 +238,29 @@ def run(market: str, output_path: str | None = None):
         report_lines.append("**Redundant pairs (corr > 0.7):**")
         for a, b, c in redundant:
             report_lines.append(f"- {a} ~ {b}: {c}")
+
+    report_lines.append("")
+    report_lines.append("## Turnover (Top 20%)")
+    report_lines.append("")
+    report_lines.append("| Factor | Avg Daily | Avg Monthly | Days |")
+    report_lines.append("|--------|-----------|-------------|------|")
+    for factor_name, res in factor_results.items():
+        t = res["turnover"]
+        report_lines.append(
+            f"| {factor_name} | {t['avg_daily']} | {t['avg_monthly']} | {t['n_days']} |"
+        )
+
+    report_lines.append("")
+    report_lines.append("## IC Trend")
+    report_lines.append("")
+    report_lines.append("| Factor | Slope/yr | R2 | Verdict |")
+    report_lines.append("|--------|----------|----|---------|")
+    for factor_name, res in factor_results.items():
+        trend = res["ic_trend"]
+        report_lines.append(
+            f"| {factor_name} | {trend['slope_per_year']} | {trend['r_squared']} | "
+            f"{trend['verdict']} |"
+        )
 
     report_lines.append("")
     report_lines.append("---")
