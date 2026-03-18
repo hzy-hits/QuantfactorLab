@@ -464,7 +464,7 @@ def step4_health_check(market: str):
     con.close()
 
 
-def run(market: str, skip_mine: bool = False, max_factors: int = 500):
+def run(market: str, skip_mine: bool = False, max_factors: int = 500, use_agent: bool = True):
     """Run the full daily factor pipeline."""
     print(f"{'='*60}")
     print(f"  Daily Factor Pipeline — {market.upper()}")
@@ -481,12 +481,60 @@ def run(market: str, skip_mine: bool = False, max_factors: int = 500):
             # Step 2: Multi-horizon backtest
             enriched = step2_multi_horizon_backtest(candidates, market)
 
-            # Step 3: Select and promote
             if enriched:
+                # Step 2.5: Agent quality review (optional, fails gracefully)
+                if use_agent:
+                    try:
+                        from src.mining.agent_review import agent_quality_review
+                        print("\n[2.5/5] Agent quality review...")
+                        enriched = agent_quality_review(enriched, market)
+                    except Exception as e:
+                        print(f"\n[2.5/5] Agent review skipped: {e}")
+
+                # Step 3: Select and promote
                 step3_select_and_promote(enriched, market)
 
     # Step 4: Health check (always run)
     step4_health_check(market)
+
+    # Step 5: Agent regime-aware weight selection (optional)
+    if use_agent:
+        try:
+            from src.mining.agent_review import agent_regime_selection, generate_factor_commentary
+            con = duckdb.connect(FACTOR_LAB_DB, read_only=True)
+            promoted = con.execute("""
+                SELECT factor_id, formula, name, hypothesis, status,
+                       ic_7d, ic_14d, ic_30d
+                FROM factor_registry WHERE market=? AND status='promoted'
+            """, [market]).fetchall()
+            con.close()
+
+            if promoted:
+                promoted_dicts = [
+                    {"factor_id": r[0], "formula": r[1], "name": r[2],
+                     "hypothesis": r[3], "status": r[4], "ic_7d": r[5]}
+                    for r in promoted
+                ]
+                print(f"\n[5/5] Agent regime-aware selection ({len(promoted_dicts)} promoted factors)...")
+                weights = agent_regime_selection(promoted_dicts, market)
+                for fid, w in weights.items():
+                    print(f"  {fid}: {w*100:.1f}%")
+
+                # Generate commentary
+                commentary = generate_factor_commentary(
+                    [{"name": d["name"], "formula": d["formula"],
+                      "ic": d.get("ic_7d", 0), "hypothesis": d["hypothesis"]}
+                     for d in promoted_dicts[:3]],
+                    market
+                )
+                if commentary:
+                    print(f"\n  Factor commentary: {commentary[:200]}...")
+
+                    # Save commentary to file for pipeline to read
+                    commentary_path = Path(f"data/{market}_factor_commentary.txt")
+                    commentary_path.write_text(commentary)
+        except Exception as e:
+            print(f"\n[5/5] Agent selection skipped: {e}")
 
     # Summary
     con = duckdb.connect(FACTOR_LAB_DB, read_only=True)
@@ -511,8 +559,9 @@ def main():
     parser.add_argument("--market", choices=["cn", "us"], required=True)
     parser.add_argument("--skip-mine", action="store_true", help="Skip mining, only health check")
     parser.add_argument("--max-factors", type=int, default=500)
+    parser.add_argument("--no-agent", action="store_true", help="Skip agent review/selection")
     args = parser.parse_args()
-    run(args.market, args.skip_mine, args.max_factors)
+    run(args.market, args.skip_mine, args.max_factors, use_agent=not args.no_agent)
 
 
 if __name__ == "__main__":
