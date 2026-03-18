@@ -1,0 +1,23 @@
+{
+  "name": "batch-us-500",
+  "wave": 0,
+  "agent_id": "batch-us-500",
+  "run_id": "07bc91e0-5a0f-442b-83dc-26ff09647be9",
+  "thread_id": "batch-us-500",
+  "session_id": null,
+  "dispatched_at": null,
+  "cwd": "/home/ivena/coding/python/factor-lab",
+  "prompt_preview": "Run the batch factor mining script for US equity market with 500 factors.\n\npython3 -m src.mining.batch_mine --market us --max-factors 500 --output rep",
+  "status": "done",
+  "pid": 659462,
+  "start_time": "2026-03-18T09:40:22.836178715+08:00",
+  "end_time": "2026-03-18T09:47:46.398695205+08:00",
+  "events_count": 20,
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "files_read": 0,
+  "commands_run": 0,
+  "last_action": "",
+  "exit_code": 0,
+  "error": null
+}
