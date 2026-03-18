@@ -204,6 +204,29 @@ def step1_mine(market: str, max_factors: int = 500) -> list[dict]:
     # Sort by score
     passed.sort(key=lambda r: r["score"], reverse=True)
 
+    # GPU Bootstrap significance test on gate-passed factors
+    try:
+        from src.evaluate.gpu_bootstrap import batch_bootstrap
+        print(f"  Running GPU bootstrap on {len(passed)} gate-passed factors...")
+        cfg_local = CONFIGS[market]
+        import duckdb as _ddb
+        _con = _ddb.connect(cfg_local["db_path"], read_only=True)
+        _prices = _con.execute(cfg_local["sql"]).fetchdf()
+        _con.close()
+        _fwd = compute_forward_returns(
+            cfg_local["db_path"], cfg_local["table"], cfg_local["date_col"],
+            cfg_local["close_col"], cfg_local["sym_col"] if market == "cn" else "symbol"
+        )
+        if market == "us":
+            _fwd = _fwd.rename(columns={"symbol": "ts_code", "date": "trade_date"})
+
+        passed = batch_bootstrap(passed, _prices, _fwd, n_bootstrap=100_000)
+        before_bootstrap = len(passed)
+        passed = [r for r in passed if r.get("bootstrap_significant", False)]
+        print(f"  Bootstrap filter: {before_bootstrap} → {len(passed)} significant (p<0.01)")
+    except Exception as e:
+        print(f"  Bootstrap skipped: {e}")
+
     # Correlation dedup: greedily keep factors with corr < 0.7 vs already-kept
     kept = []
     for candidate in passed:
