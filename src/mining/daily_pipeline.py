@@ -184,6 +184,16 @@ def step1_mine(market: str, max_factors: int = 500) -> list[dict]:
         except Exception:
             errors += 1
 
+    # Blacklist: known false-alpha patterns (size effect, illiquidity bias)
+    SIZE_BLACKLIST_PATTERNS = [
+        "rank(volume)", "rank(ts_mean(volume", "rank(ts_std(volume",
+        "rank(-volume)", "rank(-ts_mean(volume", "rank(-ts_std(volume",
+        "rank(amount)", "rank(ts_mean(amount",
+        "abs(ret_1d) / (volume", "abs(ret_1d) / (amount",  # Amihud
+    ]
+    results = [r for r in results
+               if not any(p in r["formula"] for p in SIZE_BLACKLIST_PATTERNS)]
+
     # Filter by gates
     gates = GATE_THRESHOLDS[market]
     passed = [r for r in results
