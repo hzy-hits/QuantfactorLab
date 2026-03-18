@@ -45,9 +45,15 @@ MAX_PROMOTED = 10  # max active promoted factors at any time
 
 HORIZONS = [7, 14, 30]  # multi-horizon backtest windows (trading days)
 
+# Gate thresholds adjusted for multiple testing:
+# With 500 factors, naive 5% FDR → ~25 false positives.
+# Bonferroni-like adjustment: raise IC threshold so t-stat > 3
+# t ≈ IC * sqrt(n_eff), n_eff ≈ 80 (400 days / 5D overlap)
+# IC > 3/sqrt(80) ≈ 0.034 for strict significance
+# We use a moderate threshold: stricter than before, not full Bonferroni
 GATE_THRESHOLDS = {
-    "cn": {"ic_min": 0.01, "ir_min": 0.15, "mono_min": 0.5},
-    "us": {"ic_min": 0.015, "ir_min": 0.2, "mono_min": 0.6},
+    "cn": {"ic_min": 0.015, "ir_min": 0.15, "mono_min": 0.5},   # was 0.01
+    "us": {"ic_min": 0.02, "ir_min": 0.2, "mono_min": 0.6},     # unchanged
 }
 
 # Health check thresholds
@@ -173,6 +179,7 @@ def step1_mine(market: str, max_factors: int = 500) -> list[dict]:
                 "q5_q1": q["long_short_pct"], "mono": q["monotonicity"],
                 "score": score,
                 "factor_id": f"{market}_{hash(formula) & 0xFFFFFFFF:08x}",
+                "_values": merged.set_index(["ts_code", "trade_date"])["factor_value"],  # for correlation
             })
         except Exception:
             errors += 1
@@ -184,11 +191,38 @@ def step1_mine(market: str, max_factors: int = 500) -> list[dict]:
               and abs(r["ic_ir"]) >= gates["ir_min"]
               and abs(r["mono"]) >= gates["mono_min"]]
 
-    # Sort by score, take top N
+    # Sort by score
     passed.sort(key=lambda r: r["score"], reverse=True)
-    candidates = passed[:CANDIDATE_POOL_SIZE]
 
-    print(f"  Results: {len(results)} valid, {len(passed)} passed gates, {len(candidates)} candidates")
+    # Correlation dedup: greedily keep factors with corr < 0.7 vs already-kept
+    kept = []
+    for candidate in passed:
+        if len(kept) >= CANDIDATE_POOL_SIZE:
+            break
+        is_redundant = False
+        cand_vals = candidate.get("_values")
+        if cand_vals is not None:
+            for existing in kept:
+                exist_vals = existing.get("_values")
+                if exist_vals is not None:
+                    # Align and compute rank correlation
+                    common = cand_vals.index.intersection(exist_vals.index)
+                    if len(common) > 100:
+                        corr = cand_vals.loc[common].corr(exist_vals.loc[common], method="spearman")
+                        if abs(corr) > 0.7:
+                            is_redundant = True
+                            break
+        if not is_redundant:
+            kept.append(candidate)
+
+    # Clean up _values (large, not needed downstream)
+    for c in kept:
+        c.pop("_values", None)
+    for r in results:
+        r.pop("_values", None)
+
+    candidates = kept
+    print(f"  Results: {len(results)} valid, {len(passed)} passed gates, {len(candidates)} after corr dedup")
     return candidates
 
 
