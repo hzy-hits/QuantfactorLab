@@ -81,8 +81,9 @@ def export(market: str, as_of: str | None = None):
         try:
             ast = parse(formula)
             fdf = compute_factor(ast, prices, sym_col="ts_code", date_col="trade_date")
-            # Filter to as_of date
-            today_values = fdf[fdf["trade_date"] == as_of]
+            # Filter to as_of date (convert to match dtype — DuckDB returns datetime64)
+            as_of_ts = pd.Timestamp(as_of)
+            today_values = fdf[fdf["trade_date"] == as_of_ts]
             if len(today_values) > 0:
                 factor_values[factor_id] = today_values.set_index("ts_code")["factor_value"]
                 weights[factor_id] = max(score, 0.01)

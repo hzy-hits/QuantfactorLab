@@ -260,12 +260,19 @@ def walk_forward_backtest(
     factor_values[date_col] = pd.to_datetime(factor_values[date_col]).dt.strftime("%Y-%m-%d")
     forward_returns[date_col] = pd.to_datetime(forward_returns[date_col]).dt.strftime("%Y-%m-%d")
 
-    # IS period: exclude the last 7 calendar days (~5 trading days) before
-    # oos_start to prevent forward return leakage (fwd_5d computed at the
-    # boundary would peek into OOS data).
-    is_cutoff = (pd.Timestamp(oos_start) - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
-    is_factor = factor_values[factor_values[date_col] < is_cutoff]
-    is_fwd = forward_returns[forward_returns[date_col] < is_cutoff]
+    # IS period: exclude the last fwd_horizon TRADING days before oos_start
+    # to prevent forward return leakage (fwd_5d at boundary peeks into OOS).
+    # Using trading days (not calendar days) is holiday-safe.
+    fwd_horizon = 5  # must match the forward return horizon
+    all_dates_before_oos = sorted(
+        d for d in factor_values[date_col].unique() if d < oos_start
+    )
+    if len(all_dates_before_oos) > fwd_horizon:
+        is_cutoff = all_dates_before_oos[-(fwd_horizon + 1)]  # exclude last 5 trading days
+    else:
+        is_cutoff = oos_start
+    is_factor = factor_values[factor_values[date_col] <= is_cutoff]
+    is_fwd = forward_returns[forward_returns[date_col] <= is_cutoff]
 
     is_dates = sorted(is_factor[date_col].unique())
     if len(is_dates) < min_train_days + min_test_days:

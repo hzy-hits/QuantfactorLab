@@ -144,7 +144,9 @@ class _Evaluator:
     # -- leaf nodes ----------------------------------------------------------
 
     def _eval_literal(self, node: Literal) -> pd.Series:
-        return pd.Series(node.value, index=self.df.index, dtype=float)
+        s = pd.Series(node.value, index=self.df.index, dtype=float)
+        s._is_literal = True  # mark for _apply_univ scalarization
+        return s
 
     def _eval_feature(self, node: Feature) -> pd.Series:
         name = node.name
@@ -251,14 +253,17 @@ class _Evaluator:
         name: str,
     ) -> pd.Series:
         """Universal (element-wise) operator."""
-        # Extract scalar values from constant series for non-series params.
-        # For power(x, p), clamp(x, lo, hi) etc., some args may be scalars.
+        # Only Literal-sourced series should be scalarized.
+        # A time-series result with NaN warm-up and one non-NaN value is NOT a literal.
+        # We mark literal-sourced series with a _is_literal attribute in _eval.
         call_args = []
         for a in args:
-            # If the series is constant (came from a Literal), pass as scalar.
-            unique_vals = a.dropna().unique()
-            if len(unique_vals) == 1:
-                call_args.append(unique_vals[0])
+            if isinstance(a, pd.Series) and getattr(a, '_is_literal', False):
+                val = a.dropna().unique()
+                if len(val) == 1:
+                    call_args.append(val[0])
+                else:
+                    call_args.append(a)
             else:
                 call_args.append(a)
         return func(*call_args)

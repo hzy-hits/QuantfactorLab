@@ -40,7 +40,7 @@ ALLOWED_FUNCTIONS: set[str] = {
     "ts_count", "ts_skew", "ts_kurt", "ts_product",
     "delta", "pct_change", "shift", "decay_linear", "decay_exp",
     # cross-sectional
-    "rank", "zscore", "demean", "quantile", "neutralize",
+    "rank", "zscore", "demean",  # quantile/neutralize not yet in operators.py
     # universal
     "abs", "sign", "log", "sqrt", "power", "clamp", "max", "min", "if_then",
 }
@@ -63,7 +63,7 @@ FUNCTION_ARITY: dict[str, int] = {
     "delta": 2, "pct_change": 2, "shift": 2, "decay_linear": 2, "decay_exp": 2,
     "power": 2, "clamp": 3, "if_then": 3,
     "ts_corr": 3, "ts_cov": 3, "max": 2, "min": 2,
-    "quantile": 2, "neutralize": 2,
+    # "quantile": 2, "neutralize": 2,  # not yet implemented
 }
 
 
