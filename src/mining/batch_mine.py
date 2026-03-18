@@ -67,11 +67,12 @@ DEPTH2_PAIRS = [
 # Features and windows for template substitution
 PRICE_FEATURES = ["close", "high", "low", "open"]
 VOLUME_FEATURES = ["volume"]
-RETURN_FEATURES = ["ret_1d", "ret_5d"]
+RETURN_FEATURES = ["ret_1d", "ret_5d", "ret_20d"]
+RANGE_FEATURES = ["high - low"]  # intraday range
 WINDOWS_SHORT = [3, 5, 10]
-WINDOWS_MEDIUM = [20, 40]
-WINDOWS_LONG = [60, 120]
-ALL_WINDOWS = [5, 10, 20, 60]
+WINDOWS_MEDIUM = [14, 20, 30]
+WINDOWS_LONG = [40, 60, 120]
+ALL_WINDOWS = [3, 5, 10, 20, 60]  # 5 windows instead of 4
 
 
 def generate_factor_formulas(max_factors: int = 500) -> list[tuple[str, str, str]]:
@@ -124,6 +125,50 @@ def generate_factor_formulas(max_factors: int = 500) -> list[tuple[str, str, str
     for w in [5, 10, 20]:
         formulas.append((f"hammer_{w}", f"rank((close - low) / (high - low + 0.01)) * rank(-pct_change(close, {w}))", f"hammer after {w}d decline"))
         formulas.append((f"shooting_{w}", f"rank((high - close) / (high - low + 0.01)) * rank(pct_change(close, {w}))", f"shooting star after {w}d rally"))
+
+    # === Additional templates to reach 500+ ===
+
+    # K-bar body/shadow standalone
+    for w in ALL_WINDOWS:
+        formulas.append((f"kbody_{w}", f"rank(ts_mean((close - open) / (high - low + 0.01), {w}))", f"avg K-bar body {w}d"))
+        formulas.append((f"kshadow_{w}", f"rank(ts_mean((high - close) / (high - low + 0.01), {w}))", f"avg upper shadow {w}d"))
+
+    # Higher lows / lower highs (trend structure)
+    for w1, w2 in [(5, 20), (5, 60), (10, 20), (10, 60)]:
+        formulas.append((f"higher_lows_{w1}_{w2}", f"rank(ts_min(low, {w1}) / ts_min(low, {w2}) - 1)", f"higher lows {w1}v{w2}"))
+        formulas.append((f"lower_highs_{w1}_{w2}", f"rank(-(ts_max(high, {w1}) / ts_max(high, {w2}) - 1))", f"lower highs {w1}v{w2}"))
+
+    # Range contraction/expansion
+    for w1, w2 in [(3, 20), (5, 20), (5, 60), (10, 60)]:
+        formulas.append((f"range_contract_{w1}_{w2}", f"rank(-(ts_max(high, {w1}) - ts_min(low, {w1})) / (ts_max(high, {w2}) - ts_min(low, {w2}) + 0.01))", f"range contraction {w1}v{w2}"))
+
+    # Return momentum with different windows
+    for w in [3, 10, 14, 30, 40]:
+        formulas.append((f"mom_{w}", f"rank(pct_change(close, {w}))", f"momentum {w}d"))
+        formulas.append((f"rev_{w}", f"rank(-pct_change(close, {w}))", f"reversal {w}d"))
+
+    # Acceleration (momentum of momentum)
+    for w in [5, 10, 20]:
+        formulas.append((f"accel_{w}", f"rank(ret_5d - shift(ret_5d, {w}))", f"momentum accel vs {w}d ago"))
+
+    # Volume trend ratios (additional windows)
+    for w1, w2 in [(3, 10), (3, 20), (5, 20), (5, 60), (10, 60)]:
+        formulas.append((f"voltrd_{w1}_{w2}", f"rank(ts_mean(volume, {w1}) / ts_mean(volume, {w2}))", f"vol trend {w1}v{w2}"))
+
+    # Intraday range patterns
+    for w in [5, 10, 20]:
+        formulas.append((f"range_norm_{w}", f"rank(ts_mean(high - low, {w}) / close)", f"normalized range {w}d"))
+        formulas.append((f"range_vol_{w}", f"rank(ts_std(high - low, {w}) / ts_mean(high - low, {w}))", f"range volatility {w}d"))
+
+    # Distance from high/low with more windows
+    for w in [5, 10, 14, 30, 40, 60]:
+        formulas.append((f"dist_high_{w}", f"rank((close - ts_max(high, {w})) / ts_max(high, {w}))", f"dist from {w}d high"))
+        formulas.append((f"dist_low_{w}", f"rank((close - ts_min(low, {w})) / ts_min(low, {w}))", f"dist from {w}d low"))
+
+    # Triple interactions (depth 3)
+    for w in [10, 20]:
+        formulas.append((f"tri_rev_vol_squeeze_{w}", f"rank(-ret_5d) * rank(-volume / ts_mean(volume, {w})) * rank(-ts_std(ret_1d, {w}) / (ts_std(ret_1d, 60) + 0.001))", f"reversal+shrink+squeeze {w}d"))
+        formulas.append((f"tri_mom_vol_break_{w}", f"rank(ret_5d) * rank(volume / ts_mean(volume, {w})) * rank(close / ts_max(high, {w}))", f"momentum+volume+breakout {w}d"))
 
     # Deduplicate and limit
     seen = set()
