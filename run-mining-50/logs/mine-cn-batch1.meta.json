@@ -1,0 +1,23 @@
+{
+  "name": "mine-cn-batch1",
+  "wave": 0,
+  "agent_id": "mine-cn-batch1",
+  "run_id": "ca2c8ba9-640b-4e1e-be13-0bfad95353fe",
+  "thread_id": "mine-cn-batch1",
+  "session_id": null,
+  "dispatched_at": null,
+  "cwd": "/home/ivena/coding/python/factor-lab",
+  "prompt_preview": "Run a factor mining session on A-share (CN) data. Test 25 factor formulas.\n\nExecute this script:\n```python\nimport sys; sys.path.insert(0, '.')\nimport ",
+  "status": "done",
+  "pid": 652755,
+  "start_time": "2026-03-18T08:53:49.584244050+08:00",
+  "end_time": "2026-03-18T08:56:11.688274114+08:00",
+  "events_count": 20,
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "files_read": 0,
+  "commands_run": 0,
+  "last_action": "",
+  "exit_code": 0,
+  "error": null
+}
