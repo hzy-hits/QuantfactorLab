@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Data
+data/*.duckdb
+data/*.db
+
+# Codex run artifacts (regenerated each session)
+run-*/
+
+# Logs
+logs/
+
+# OS
+.DS_Store
