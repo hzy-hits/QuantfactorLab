@@ -32,6 +32,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.dsl.parser import parse as parse_dsl, DSLParseError
+from src.dsl.compute import compute_factor
 from src.backtest.walk_forward import walk_forward_backtest, run_oos_check, BacktestResult
 from src.backtest.gates import check_gates, format_gate_result, GateResult
 from src.agent.prompts import (
@@ -595,10 +596,18 @@ class FactorSession:
             print(f"  Direction: {parsed.direction}")
             print(f"  Hypothesis: {parsed.hypothesis[:80]}...")
 
-            # Compute factor values
-            factor_df = _compute_dsl_factor(
-                parsed.formula, features, self.cfg["sym_col"], self.cfg["date_col"]
-            )
+            # Compute factor values using the canonical DSL compute engine
+            try:
+                ast = parse_dsl(parsed.formula)
+                factor_df = compute_factor(
+                    ast, features,
+                    sym_col=self.cfg["sym_col"],
+                    date_col=self.cfg["date_col"],
+                )
+                factor_df = factor_df.dropna(subset=["factor_value"])
+            except (DSLParseError, Exception) as e:
+                logger.warning(f"Factor computation error for '{parsed.formula}': {e}")
+                factor_df = None
             if factor_df is None or len(factor_df) == 0:
                 print(f"  Factor computation failed.")
                 self.experiments.append({
@@ -674,8 +683,11 @@ class FactorSession:
         print("=" * 60)
         print("Session complete. Running OOS checks on top 3 by IS IC...")
 
-        # Filter to experiments that have valid factor data
-        valid_exps = [e for e in self.experiments if "_factor_df" in e and e["_factor_df"] is not None]
+        # Filter to experiments that have valid factor data AND passed gates
+        valid_exps = [
+            e for e in self.experiments
+            if "_factor_df" in e and e["_factor_df"] is not None and e.get("gates_passed")
+        ]
         top3 = sorted(valid_exps, key=lambda e: abs(e["is_ic"]), reverse=True)[:3]
 
         top3_oos = []

@@ -45,6 +45,27 @@ ALLOWED_FUNCTIONS: set[str] = {
     "abs", "sign", "log", "sqrt", "power", "clamp", "max", "min", "if_then",
 }
 
+FEATURE_WHITELIST: set[str] = {
+    "open", "high", "low", "close", "vwap",
+    "volume", "amount", "turnover_rate", "volume_ratio",
+    "ret_1d", "ret_5d", "ret_20d", "ret_60d",
+    "rsi_14", "bb_position", "ma20_dist", "ma60_dist", "atr_14", "obv",
+    "pe_ttm", "pb", "market_cap", "circ_market_cap", "ps_ttm", "dividend_yield",
+    "net_mf_amount", "large_net_in", "margin_balance", "margin_delta_5d",
+    "block_premium", "holder_change",
+    "index_ret_1d", "index_ret_5d", "sector_ret_5d", "vix",
+}
+
+FUNCTION_ARITY: dict[str, int] = {
+    "rank": 1, "zscore": 1, "demean": 1, "abs": 1, "sign": 1, "log": 1, "sqrt": 1,
+    "ts_mean": 2, "ts_std": 2, "ts_max": 2, "ts_min": 2, "ts_sum": 2, "ts_rank": 2,
+    "ts_argmax": 2, "ts_argmin": 2, "ts_count": 2, "ts_skew": 2, "ts_kurt": 2, "ts_product": 2,
+    "delta": 2, "pct_change": 2, "shift": 2, "decay_linear": 2, "decay_exp": 2,
+    "power": 2, "clamp": 3, "if_then": 3,
+    "ts_corr": 3, "ts_cov": 3, "max": 2, "min": 2,
+    "quantile": 2, "neutralize": 2,
+}
+
 
 # ---------------------------------------------------------------------------
 # AST nodes
@@ -288,6 +309,15 @@ def _validate(node: ASTNode) -> None:
         if node.name not in ALLOWED_FUNCTIONS:
             raise DSLParseError(f"Unknown function: {node.name!r}")
 
+        # Validate function arity
+        if node.name in FUNCTION_ARITY:
+            expected = FUNCTION_ARITY[node.name]
+            if len(node.args) != expected:
+                raise DSLParseError(
+                    f"Function {node.name!r} expects {expected} argument(s), "
+                    f"got {len(node.args)}"
+                )
+
         # Validate lookback window for time-series functions
         if node.name in _WINDOW_FUNCTIONS:
             if len(node.args) < 2:
@@ -321,8 +351,16 @@ def _validate(node: ASTNode) -> None:
     elif isinstance(node, UnaryOp):
         _validate(node.operand)
 
-    elif isinstance(node, (Literal, Feature)):
-        pass  # leaves are always valid
+    elif isinstance(node, Feature):
+        # Validate feature against whitelist
+        if node.name not in FEATURE_WHITELIST:
+            raise DSLParseError(
+                f"Unknown feature: {node.name!r}. "
+                f"Allowed features: {sorted(FEATURE_WHITELIST)}"
+            )
+
+    elif isinstance(node, Literal):
+        pass  # numeric literals are always valid
 
     else:
         raise DSLParseError(f"Unknown node type: {type(node)}")

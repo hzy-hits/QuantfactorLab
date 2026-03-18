@@ -1,0 +1,23 @@
+{
+  "name": "review-backtest",
+  "wave": 0,
+  "agent_id": "review-backtest",
+  "run_id": "d7477673-8048-4c7b-b0dc-5b1479b6152a",
+  "thread_id": "review-backtest",
+  "session_id": null,
+  "dispatched_at": null,
+  "cwd": "/home/ivena/coding/python/factor-lab",
+  "prompt_preview": "Review src/backtest/ (walk_forward.py, gates.py) for correctness.\n\nCheck:\n1. Walk-forward: Is the fold splitting correct? With 500 days data, 2 folds,",
+  "status": "done",
+  "pid": 637320,
+  "start_time": "2026-03-18T08:09:49.403862460+08:00",
+  "end_time": "2026-03-18T08:15:03.343781416+08:00",
+  "events_count": 58,
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "files_read": 0,
+  "commands_run": 0,
+  "last_action": "",
+  "exit_code": 0,
+  "error": null
+}

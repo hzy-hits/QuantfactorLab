@@ -260,9 +260,12 @@ def walk_forward_backtest(
     factor_values[date_col] = pd.to_datetime(factor_values[date_col]).dt.strftime("%Y-%m-%d")
     forward_returns[date_col] = pd.to_datetime(forward_returns[date_col]).dt.strftime("%Y-%m-%d")
 
-    # IS period: everything before oos_start
-    is_factor = factor_values[factor_values[date_col] < oos_start]
-    is_fwd = forward_returns[forward_returns[date_col] < oos_start]
+    # IS period: exclude the last 7 calendar days (~5 trading days) before
+    # oos_start to prevent forward return leakage (fwd_5d computed at the
+    # boundary would peek into OOS data).
+    is_cutoff = (pd.Timestamp(oos_start) - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+    is_factor = factor_values[factor_values[date_col] < is_cutoff]
+    is_fwd = forward_returns[forward_returns[date_col] < is_cutoff]
 
     is_dates = sorted(is_factor[date_col].unique())
     if len(is_dates) < min_train_days + min_test_days:

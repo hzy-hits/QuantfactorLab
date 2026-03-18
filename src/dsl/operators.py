@@ -78,12 +78,9 @@ def ts_cov(x: pd.Series, y: pd.Series, n: int) -> pd.Series:
     return x.rolling(n, min_periods=n).cov(y)
 
 
-def ts_count(x: pd.Series, n: int) -> pd.Series:
-    """Count of truthy (> 0) values in the last *n* periods.
-
-    *x* is expected to be a boolean-like series (1/0 or True/False).
-    """
-    return x.astype(float).rolling(n, min_periods=n).sum()
+def ts_count(s: pd.Series, n: int) -> pd.Series:
+    """Count of positive (> 0) values in the last *n* periods."""
+    return (s > 0).astype(float).rolling(int(n), min_periods=1).sum()
 
 
 def ts_skew(x: pd.Series, n: int) -> pd.Series:

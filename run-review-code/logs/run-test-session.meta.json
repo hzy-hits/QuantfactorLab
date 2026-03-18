@@ -1,0 +1,23 @@
+{
+  "name": "run-test-session",
+  "wave": 1,
+  "agent_id": "run-test-session",
+  "run_id": "d7477673-8048-4c7b-b0dc-5b1479b6152a",
+  "thread_id": "run-test-session",
+  "session_id": null,
+  "dispatched_at": null,
+  "cwd": "/home/ivena/coding/python/factor-lab",
+  "prompt_preview": "Run a quick test of the Factor Lab to verify it works end-to-end.\n\n1. First test DSL parsing:\n   python3 -c \"\n   import sys; sys.path.insert(0, '.')\n ",
+  "status": "done",
+  "pid": 648681,
+  "start_time": "2026-03-18T08:16:28.461374140+08:00",
+  "end_time": "2026-03-18T08:18:58.442374593+08:00",
+  "events_count": 41,
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "files_read": 0,
+  "commands_run": 0,
+  "last_action": "",
+  "exit_code": 0,
+  "error": null
+}

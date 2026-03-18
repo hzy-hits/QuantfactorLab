@@ -1,0 +1,23 @@
+{
+  "name": "review-dsl",
+  "wave": 0,
+  "agent_id": "review-dsl",
+  "run_id": "d7477673-8048-4c7b-b0dc-5b1479b6152a",
+  "thread_id": "review-dsl",
+  "session_id": null,
+  "dispatched_at": null,
+  "cwd": "/home/ivena/coding/python/factor-lab",
+  "prompt_preview": "Review src/dsl/ (parser.py, operators.py, compute.py) for correctness and robustness.\n\nCheck:\n1. parser.py: Is the Pratt parser correct? Test mentally",
+  "status": "done",
+  "pid": 637321,
+  "start_time": "2026-03-18T08:09:49.404075288+08:00",
+  "end_time": "2026-03-18T08:16:28.461209595+08:00",
+  "events_count": 59,
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "files_read": 0,
+  "commands_run": 0,
+  "last_action": "",
+  "exit_code": 0,
+  "error": null
+}

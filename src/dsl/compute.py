@@ -299,6 +299,8 @@ def compute_factor(
     if date_col not in prices_df.columns:
         raise DSLParseError(f"Date column {date_col!r} not found in DataFrame")
 
+    prices_df = prices_df.sort_values([sym_col, date_col]).reset_index(drop=True)
+
     evaluator = _Evaluator(prices_df, sym_col, date_col)
     factor_values = evaluator.evaluate(ast)
 
