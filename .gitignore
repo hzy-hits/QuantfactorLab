@@ -16,3 +16,5 @@ logs/
 
 # OS
 .DS_Store
+rust-bootstrap/target/
+data/.cache/
