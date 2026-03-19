@@ -18,3 +18,4 @@ logs/
 .DS_Store
 rust-bootstrap/target/
 data/.cache/
+data/

@@ -1,0 +1,5 @@
+{"ts": "2026-03-19T16:43:54+00:00", "market": "cn", "formula": "rank(delta(volume, 5))", "name": "", "is_ic": -0.02, "is_ic_ir": -0.157, "gates": "FAIL", "status": "evaluated", "eval_seconds": 5.2}
+{"ts": "2026-03-19T16:44:32+00:00", "market": "cn", "formula": "rank(delta(volume, 5))", "name": "", "is_ic": -0.02, "is_ic_ir": -0.157, "gates": "FAIL", "status": "evaluated", "eval_seconds": 5.0}
+{"ts": "2026-03-19T16:45:49+00:00", "market": "cn", "formula": "rank(delta(volume, 5) / ts_mean(volume, 20))", "name": "", "is_ic": -0.0146, "is_ic_ir": -0.122, "gates": "FAIL", "status": "evaluated", "eval_seconds": 5.3}
+{"ts": "2026-03-19T16:45:53+00:00", "market": "us", "formula": "rank(pct_change(volume, 5))", "name": "", "is_ic": 0.0027, "is_ic_ir": 0.036, "gates": "FAIL", "status": "evaluated", "eval_seconds": 3.7}
+{"ts": "2026-03-19T16:46:14+00:00", "market": "cn", "formula": "rank(volume / ts_min(volume, 60) - 1)", "name": "", "is_ic": -0.0505, "is_ic_ir": -0.473, "gates": "FAIL", "status": "evaluated", "eval_seconds": 5.1}
