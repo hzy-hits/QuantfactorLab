@@ -5,7 +5,7 @@
 ///   → {"real_ic": 0.026, "p_value": 0.0001, "significant": true}
 ///
 /// Input: daily IC values (one per line or space-separated)
-/// Output: JSON with p-value
+/// Output: JSON with a circular moving block bootstrap on the daily IC mean
 use std::io::{self, Read};
 
 use rand::prelude::*;
@@ -23,6 +23,7 @@ struct BootstrapResult {
     significant_05: bool,
     n_bootstrap: usize,
     n_days: usize,
+    block_size: usize,
 }
 
 fn main() {
@@ -33,6 +34,17 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(100_000);
+    let base_seed: u64 = args
+        .iter()
+        .position(|a| a == "--seed")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(42);
+    let requested_block_size: Option<usize> = args
+        .iter()
+        .position(|a| a == "--block-size")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok());
 
     // Read daily ICs from stdin
     let mut input = String::new();
@@ -51,19 +63,30 @@ fn main() {
     let n_days = daily_ics.len();
     let real_ic: f64 = daily_ics.iter().sum::<f64>() / n_days as f64;
     let abs_real_ic = real_ic.abs();
+    let centered_ics: Vec<f64> = daily_ics.iter().map(|ic| ic - real_ic).collect();
+    let block_size = requested_block_size
+        .unwrap_or_else(|| ((n_days as f64).sqrt().round() as usize).max(5))
+        .max(1)
+        .min(n_days);
+    let n_blocks = (n_days + block_size - 1) / block_size;
 
-    // Parallel bootstrap with rayon
+    // Parallel circular moving block bootstrap.
     let null_ics: Vec<f64> = (0..n_bootstrap)
         .into_par_iter()
         .map(|seed| {
-            let mut rng = StdRng::seed_from_u64(42 + seed as u64);
+            let mut rng = StdRng::seed_from_u64(base_seed + seed as u64);
             let mut sum = 0.0f64;
-            for &ic in &daily_ics {
-                // Random sign flip under null hypothesis (IC mean = 0)
-                let sign: f64 = if rng.gen_bool(0.5) { 1.0 } else { -1.0 };
-                // Resample with replacement
-                let idx = rng.gen_range(0..n_days);
-                sum += daily_ics[idx] * sign;
+            let mut used = 0usize;
+            for _ in 0..n_blocks {
+                let start = rng.gen_range(0..n_days);
+                for offset in 0..block_size {
+                    if used == n_days {
+                        break;
+                    }
+                    let idx = (start + offset) % n_days;
+                    sum += centered_ics[idx];
+                    used += 1;
+                }
             }
             sum / n_days as f64
         })
@@ -90,6 +113,7 @@ fn main() {
         significant_05: p_value < 0.05,
         n_bootstrap,
         n_days,
+        block_size,
     };
 
     println!("{}", serde_json::to_string(&result).unwrap());

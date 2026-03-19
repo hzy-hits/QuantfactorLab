@@ -20,6 +20,7 @@ Cron (06:00 CST, before morning pipeline):
 import sys
 import argparse
 import json
+import hashlib
 from pathlib import Path
 from datetime import datetime, date
 
@@ -61,6 +62,8 @@ HEALTH_WATCH_IC = 0.005    # IC below this → watchlist
 HEALTH_WATCH_DAYS = 5      # consecutive days
 HEALTH_RETIRE_DAYS = 5     # days on watchlist before retire
 HEALTH_RECOVER_IC = 0.01   # IC above this → recover from watchlist
+
+HORIZON_WEIGHTS = {7: 0.5, 14: 0.3, 30: 0.2}
 
 
 def init_db():
@@ -124,6 +127,204 @@ def init_db():
             PRIMARY KEY (date, factor_id)
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS factor_weights (
+            as_of DATE NOT NULL,
+            market VARCHAR NOT NULL,
+            factor_id VARCHAR NOT NULL,
+            weight DOUBLE NOT NULL,
+            source VARCHAR DEFAULT 'agent_regime',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (as_of, market, factor_id)
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_runs (
+            as_of DATE NOT NULL,
+            market VARCHAR NOT NULL,
+            stage VARCHAR NOT NULL,
+            candidate_count INTEGER NOT NULL,
+            note VARCHAR,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (as_of, market, stage)
+        )
+    """)
+    con.execute("""
+        UPDATE factor_registry
+        SET direction = CASE
+            WHEN (0.5 * COALESCE(ic_7d, 0.0) + 0.3 * COALESCE(ic_14d, 0.0) + 0.2 * COALESCE(ic_30d, 0.0)) < 0
+                THEN 'short'
+            ELSE 'long'
+        END
+        WHERE direction IS NULL
+           OR direction NOT IN ('long', 'short')
+           OR (
+                direction = 'long' AND
+                (0.5 * COALESCE(ic_7d, 0.0) + 0.3 * COALESCE(ic_14d, 0.0) + 0.2 * COALESCE(ic_30d, 0.0)) < 0
+           )
+           OR (
+                direction = 'short' AND
+                (0.5 * COALESCE(ic_7d, 0.0) + 0.3 * COALESCE(ic_14d, 0.0) + 0.2 * COALESCE(ic_30d, 0.0)) > 0
+           )
+    """)
+    con.close()
+
+
+def _stable_factor_id(market: str, formula: str) -> str:
+    """Deterministic factor id so registry/export names stay stable across runs."""
+    digest = hashlib.sha1(formula.encode("utf-8")).hexdigest()[:12]
+    return f"{market}_{digest}"
+
+
+def _infer_direction_from_ic(ic: float) -> str:
+    return "short" if ic < 0 else "long"
+
+
+def _infer_direction_from_horizons(horizon_metrics: dict[int, dict], fallback_ic: float) -> str:
+    weighted_ic = sum(
+        HORIZON_WEIGHTS.get(h, 0.0) * float(metrics.get("ic", 0.0))
+        for h, metrics in horizon_metrics.items()
+    )
+    if abs(weighted_ic) < 1e-12:
+        weighted_ic = fallback_ic
+    return _infer_direction_from_ic(weighted_ic)
+
+
+def _is_blacklisted_formula(formula: str) -> bool:
+    """Filter out direct size/liquidity proxies that masquerade as alpha."""
+    normalized = formula.replace(" ", "")
+    blocked_patterns = [
+        "rank(volume)",
+        "rank(-volume)",
+        "rank(ts_mean(volume,",
+        "rank(-ts_mean(volume,",
+        "rank(ts_std(volume,",
+        "rank(-ts_std(volume,",
+        "rank(volume/ts_mean(volume,",
+        "rank(-volume/ts_mean(volume,",
+        "rank(amount)",
+        "rank(-amount)",
+        "rank(ts_mean(amount,",
+        "rank(-ts_mean(amount,",
+        "rank(ts_std(amount,",
+        "rank(-ts_std(amount,",
+        "abs(ret_1d)/(volume",
+        "abs(ret_1d)/(amount",
+    ]
+    return any(pattern in normalized for pattern in blocked_patterns)
+
+
+def _cross_sectional_corr(a: pd.Series, b: pd.Series) -> float:
+    """Average daily cross-sectional rank correlation, matching the formal gate."""
+    common = a.index.intersection(b.index)
+    if len(common) <= 100:
+        return 0.0
+
+    aligned = pd.DataFrame({
+        "a": a.loc[common].values,
+        "b": b.loc[common].values,
+    }, index=common).dropna()
+    if len(aligned) <= 100:
+        return 0.0
+
+    corrs = []
+    for _, group in aligned.groupby(level="trade_date"):
+        if len(group) < 10:
+            continue
+        corr = group["a"].corr(group["b"], method="spearman")
+        if pd.notna(corr):
+            corrs.append(abs(float(corr)))
+    return float(np.mean(corrs)) if corrs else 0.0
+
+
+def _candidate_metric_values(candidate: dict) -> list[float]:
+    return [
+        candidate.get("ic_7d", 0.0), candidate.get("ic_14d", 0.0), candidate.get("ic_30d", 0.0),
+        candidate.get("ic_ir_7d", 0.0), candidate.get("ic_ir_14d", 0.0), candidate.get("ic_ir_30d", 0.0),
+        candidate.get("mono_7d", 0.0), candidate.get("mono_14d", 0.0), candidate.get("mono_30d", 0.0),
+        candidate.get("q5_q1_7d", 0.0), candidate.get("q5_q1_14d", 0.0), candidate.get("q5_q1_30d", 0.0),
+    ]
+
+
+def _refresh_promoted_factor(con: duckdb.DuckDBPyConnection, factor_id: str, candidate: dict) -> None:
+    con.execute("""
+        UPDATE factor_registry SET
+            name=?, hypothesis=?, composite_score=?, direction=?,
+            ic_7d=?, ic_14d=?, ic_30d=?,
+            ic_ir_7d=?, ic_ir_14d=?, ic_ir_30d=?,
+            mono_7d=?, mono_14d=?, mono_30d=?,
+            q5_q1_7d=?, q5_q1_14d=?, q5_q1_30d=?
+        WHERE factor_id=?
+    """, [
+        candidate["name"], candidate["hypothesis"], candidate["composite_score"], candidate["direction"],
+        *_candidate_metric_values(candidate),
+        factor_id,
+    ])
+
+
+def _promote_factor(
+    con: duckdb.DuckDBPyConnection,
+    market: str,
+    candidate: dict,
+    existing_factor_id: str | None = None,
+) -> None:
+    if existing_factor_id:
+        con.execute("""
+            UPDATE factor_registry SET
+                name=?, hypothesis=?, formula=?, direction=?, composite_score=?,
+                status='promoted', promoted_at=CURRENT_TIMESTAMP,
+                watchlist_at=NULL, retired_at=NULL, retire_reason=NULL,
+                health_watch_count=0,
+                ic_7d=?, ic_14d=?, ic_30d=?,
+                ic_ir_7d=?, ic_ir_14d=?, ic_ir_30d=?,
+                mono_7d=?, mono_14d=?, mono_30d=?,
+                q5_q1_7d=?, q5_q1_14d=?, q5_q1_30d=?
+            WHERE factor_id=?
+        """, [
+            candidate["name"], candidate["hypothesis"], candidate["formula"],
+            candidate["direction"], candidate["composite_score"],
+            *_candidate_metric_values(candidate),
+            existing_factor_id,
+        ])
+        return
+
+    con.execute("""
+        INSERT INTO factor_registry
+            (factor_id, market, name, hypothesis, formula, direction, composite_score,
+             status, promoted_at,
+             ic_7d, ic_14d, ic_30d, ic_ir_7d, ic_ir_14d, ic_ir_30d,
+             mono_7d, mono_14d, mono_30d, q5_q1_7d, q5_q1_14d, q5_q1_30d)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'promoted', CURRENT_TIMESTAMP,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        candidate["factor_id"], market, candidate["name"], candidate["hypothesis"],
+        candidate["formula"], candidate["direction"], candidate["composite_score"],
+        *_candidate_metric_values(candidate),
+    ])
+
+
+def _save_factor_weights(market: str, weights: dict[str, float]) -> None:
+    if not weights:
+        return
+
+    init_db()
+    con = duckdb.connect(FACTOR_LAB_DB)
+    as_of = date.today().isoformat()
+    for factor_id, weight in weights.items():
+        con.execute("""
+            INSERT OR REPLACE INTO factor_weights (as_of, market, factor_id, weight, source)
+            VALUES (?, ?, ?, ?, 'agent_regime')
+        """, [as_of, market, factor_id, float(weight)])
+    con.close()
+
+
+def _log_pipeline_run(market: str, stage: str, candidate_count: int, note: str = "") -> None:
+    init_db()
+    con = duckdb.connect(FACTOR_LAB_DB)
+    con.execute("""
+        INSERT OR REPLACE INTO pipeline_runs (as_of, market, stage, candidate_count, note)
+        VALUES (?, ?, ?, ?, ?)
+    """, [date.today().isoformat(), market, stage, int(candidate_count), note])
     con.close()
 
 
@@ -178,49 +379,33 @@ def step1_mine(market: str, max_factors: int = 500) -> list[dict]:
                 "ic": ic_stats["ic_mean"], "ic_ir": ic_stats["ic_ir"],
                 "q5_q1": q["long_short_pct"], "mono": q["monotonicity"],
                 "score": score,
-                "factor_id": f"{market}_{hash(formula) & 0xFFFFFFFF:08x}",
+                "direction": _infer_direction_from_ic(ic_stats["ic_mean"]),
+                "factor_id": _stable_factor_id(market, formula),
                 "_values": merged.set_index(["ts_code", "trade_date"])["factor_value"],  # for correlation
             })
         except Exception:
             errors += 1
 
-    # Blacklist: known false-alpha patterns (size effect, illiquidity bias)
-    SIZE_BLACKLIST_PATTERNS = [
-        "rank(volume)", "rank(ts_mean(volume", "rank(ts_std(volume",
-        "rank(-volume)", "rank(-ts_mean(volume", "rank(-ts_std(volume",
-        "rank(amount)", "rank(ts_mean(amount",
-        "abs(ret_1d) / (volume", "abs(ret_1d) / (amount",  # Amihud
-    ]
-    results = [r for r in results
-               if not any(p in r["formula"] for p in SIZE_BLACKLIST_PATTERNS)]
+    results = [r for r in results if not _is_blacklisted_formula(r["formula"])]
 
     # Filter by gates
     gates = GATE_THRESHOLDS[market]
-    passed = [r for r in results
-              if abs(r["ic"]) >= gates["ic_min"]
-              and abs(r["ic_ir"]) >= gates["ir_min"]
-              and abs(r["mono"]) >= gates["mono_min"]]
+    ic_pass = [r for r in results if abs(r["ic"]) >= gates["ic_min"]]
+    ir_pass = [r for r in ic_pass if abs(r["ic_ir"]) >= gates["ir_min"]]
+    passed = [r for r in ir_pass if abs(r["mono"]) >= gates["mono_min"]]
+    print(
+        "  Gate attrition: "
+        f"valid={len(results)} -> ic={len(ic_pass)} -> ic+ir={len(ir_pass)} -> ic+ir+mono={len(passed)}"
+    )
 
     # Sort by score
     passed.sort(key=lambda r: r["score"], reverse=True)
 
-    # GPU Bootstrap significance test on gate-passed factors
+    # Bootstrap significance test on gate-passed factors (Rust by default)
     try:
         from src.evaluate.gpu_bootstrap import batch_bootstrap
-        print(f"  Running GPU bootstrap on {len(passed)} gate-passed factors...")
-        cfg_local = CONFIGS[market]
-        import duckdb as _ddb
-        _con = _ddb.connect(cfg_local["db_path"], read_only=True)
-        _prices = _con.execute(cfg_local["sql"]).fetchdf()
-        _con.close()
-        _fwd = compute_forward_returns(
-            cfg_local["db_path"], cfg_local["table"], cfg_local["date_col"],
-            cfg_local["close_col"], cfg_local["sym_col"] if market == "cn" else "symbol"
-        )
-        if market == "us":
-            _fwd = _fwd.rename(columns={"symbol": "ts_code", "date": "trade_date"})
-
-        passed = batch_bootstrap(passed, _prices, _fwd, n_bootstrap=100_000)
+        print(f"  Running bootstrap significance on {len(passed)} gate-passed factors...")
+        passed = batch_bootstrap(passed, prices, fwd, n_bootstrap=100_000, backend="rust")
         before_bootstrap = len(passed)
         passed = [r for r in passed if r.get("bootstrap_significant", False)]
         print(f"  Bootstrap filter: {before_bootstrap} → {len(passed)} significant (p<0.01)")
@@ -241,7 +426,7 @@ def step1_mine(market: str, max_factors: int = 500) -> list[dict]:
                     # Align and compute rank correlation
                     common = cand_vals.index.intersection(exist_vals.index)
                     if len(common) > 100:
-                        corr = cand_vals.loc[common].corr(exist_vals.loc[common], method="spearman")
+                        corr = _cross_sectional_corr(cand_vals, exist_vals)
                         if abs(corr) > 0.7:
                             is_redundant = True
                             break
@@ -312,9 +497,8 @@ def step2_multi_horizon_backtest(candidates: list[dict], market: str) -> list[di
                 continue
 
             # Composite score across horizons (weight recent more)
-            horizon_weights = {7: 0.5, 14: 0.3, 30: 0.2}
             composite = sum(
-                horizon_weights.get(h, 0) * abs(m["ic"]) * abs(m["ic_ir"])
+                HORIZON_WEIGHTS.get(h, 0) * abs(m["ic"]) * abs(m["ic_ir"])
                 for h, m in horizon_metrics.items()
                 if m["ic"] * m.get("mono", 0) >= 0  # penalize IC/mono disagreement
             )
@@ -332,6 +516,7 @@ def step2_multi_horizon_backtest(candidates: list[dict], market: str) -> list[di
                 f"q5_q1_{h}d": horizon_metrics.get(h, {}).get("q5_q1", 0) for h in HORIZONS
             })
             c["composite_score"] = composite
+            c["direction"] = _infer_direction_from_horizons(horizon_metrics, c["ic"])
             enriched.append(c)
 
         except Exception as e:
@@ -343,8 +528,8 @@ def step2_multi_horizon_backtest(candidates: list[dict], market: str) -> list[di
 
 
 def step3_select_and_promote(candidates: list[dict], market: str):
-    """Select top 3 factors, save to registry, promote for today's report."""
-    print(f"\n[3/4] Selecting top {PROMOTE_COUNT} factors for promotion...")
+    """Refresh active factors, then promote top-ranked new factors into open slots."""
+    print(f"\n[Promote] Refreshing active factors and promoting replacements...")
 
     init_db()
     con = duckdb.connect(FACTOR_LAB_DB)
@@ -357,68 +542,64 @@ def step3_select_and_promote(candidates: list[dict], market: str):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [today, market, c["factor_id"], c["formula"], c["ic"], c["ic_ir"], c["mono"], c["q5_q1"], i + 1])
 
-    # Check how many are already promoted
+    existing_rows = con.execute("""
+        SELECT factor_id, formula, status
+        FROM factor_registry
+        WHERE market=?
+    """, [market]).fetchall()
+    existing_by_formula = {
+        formula: {"factor_id": factor_id, "status": status}
+        for factor_id, formula, status in existing_rows
+    }
+
+    refreshed = 0
+    for c in candidates:
+        existing = existing_by_formula.get(c["formula"])
+        if existing and existing["status"] == "promoted":
+            _refresh_promoted_factor(con, existing["factor_id"], c)
+            refreshed += 1
+
     existing_promoted = con.execute(
         "SELECT COUNT(*) FROM factor_registry WHERE market=? AND status='promoted'", [market]
     ).fetchone()[0]
 
     promote_slots = max(0, MAX_PROMOTED - existing_promoted)
-    to_promote = candidates[:min(PROMOTE_COUNT, promote_slots)]
+    promotions_allowed = min(PROMOTE_COUNT, promote_slots)
+    promoted = 0
+    for c in candidates:
+        if promoted >= promotions_allowed:
+            break
 
-    for c in to_promote:
-        # Check if formula already in registry
-        existing = con.execute(
-            "SELECT factor_id FROM factor_registry WHERE formula=? AND market=?",
-            [c["formula"], market]
-        ).fetchone()
+        existing = existing_by_formula.get(c["formula"])
+        if existing and existing["status"] == "promoted":
+            continue
+
+        _promote_factor(
+            con,
+            market,
+            c,
+            existing_factor_id=existing["factor_id"] if existing else None,
+        )
+        promoted += 1
 
         if existing:
-            # Update existing
-            con.execute("""
-                UPDATE factor_registry SET
-                    composite_score=?, status='promoted', promoted_at=CURRENT_TIMESTAMP,
-                    ic_7d=?, ic_14d=?, ic_30d=?,
-                    ic_ir_7d=?, ic_ir_14d=?, ic_ir_30d=?,
-                    mono_7d=?, mono_14d=?, mono_30d=?,
-                    q5_q1_7d=?, q5_q1_14d=?, q5_q1_30d=?
-                WHERE factor_id=?
-            """, [
-                c["composite_score"],
-                c.get("ic_7d", 0), c.get("ic_14d", 0), c.get("ic_30d", 0),
-                c.get("ic_ir_7d", 0), c.get("ic_ir_14d", 0), c.get("ic_ir_30d", 0),
-                c.get("mono_7d", 0), c.get("mono_14d", 0), c.get("mono_30d", 0),
-                c.get("q5_q1_7d", 0), c.get("q5_q1_14d", 0), c.get("q5_q1_30d", 0),
-                existing[0],
-            ])
-            print(f"  Updated: {c['name']} (composite={c['composite_score']:.4f})")
+            existing["status"] = "promoted"
+            print(f"  Re-promoted: {c['name']} (composite={c['composite_score']:.4f}, direction={c['direction']})")
         else:
-            # Insert new
-            con.execute("""
-                INSERT INTO factor_registry
-                    (factor_id, market, name, hypothesis, formula, composite_score,
-                     status, promoted_at,
-                     ic_7d, ic_14d, ic_30d, ic_ir_7d, ic_ir_14d, ic_ir_30d,
-                     mono_7d, mono_14d, mono_30d, q5_q1_7d, q5_q1_14d, q5_q1_30d)
-                VALUES (?, ?, ?, ?, ?, ?, 'promoted', CURRENT_TIMESTAMP,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [
-                c["factor_id"], market, c["name"], c["hypothesis"], c["formula"],
-                c["composite_score"],
-                c.get("ic_7d", 0), c.get("ic_14d", 0), c.get("ic_30d", 0),
-                c.get("ic_ir_7d", 0), c.get("ic_ir_14d", 0), c.get("ic_ir_30d", 0),
-                c.get("mono_7d", 0), c.get("mono_14d", 0), c.get("mono_30d", 0),
-                c.get("q5_q1_7d", 0), c.get("q5_q1_14d", 0), c.get("q5_q1_30d", 0),
-            ])
             print(f"  Promoted: {c['name']} — {c['formula'][:60]}")
-            print(f"    IC 7/14/30d: {c.get('ic_7d',0):.4f} / {c.get('ic_14d',0):.4f} / {c.get('ic_30d',0):.4f}")
+            print(
+                f"    IC 7/14/30d: {c.get('ic_7d',0):.4f} / "
+                f"{c.get('ic_14d',0):.4f} / {c.get('ic_30d',0):.4f} ({c['direction']})"
+            )
 
     con.close()
-    print(f"  {len(to_promote)} factors promoted ({existing_promoted} already active)")
+    print(f"  Refreshed {refreshed} active factors")
+    print(f"  Promoted {promoted} new factors ({existing_promoted} active before fill, {promote_slots} slots available)")
 
 
 def step4_health_check(market: str):
     """Check promoted factors, move decaying ones to watchlist/retired."""
-    print(f"\n[4/4] Health check for {market.upper()} promoted factors...")
+    print(f"\n[Health] Checking {market.upper()} promoted factors...")
 
     init_db()
     con = duckdb.connect(FACTOR_LAB_DB)
@@ -540,6 +721,8 @@ def run(market: str, skip_mine: bool = False, max_factors: int = 500, use_agent:
 
     init_db()
 
+    enriched = []
+
     if not skip_mine:
         # Step 1: Mine
         candidates = step1_mine(market, max_factors)
@@ -555,14 +738,24 @@ def run(market: str, skip_mine: bool = False, max_factors: int = 500, use_agent:
                         from src.mining.agent_review import agent_quality_review
                         print("\n[2.5/5] Agent quality review...")
                         enriched = agent_quality_review(enriched, market)
+                        if not enriched:
+                            print("\n[Agent] Agent review rejected all candidates")
+                            _log_pipeline_run(market, "agent_empty", 0, "agent review rejected all candidates")
                     except Exception as e:
                         print(f"\n[2.5/5] Agent review skipped: {e}")
 
-                # Step 3: Select and promote
-                step3_select_and_promote(enriched, market)
+            else:
+                print("\n[Backtest] No candidates survived multi-horizon validation")
+                _log_pipeline_run(market, "backtest_empty", 0, "no candidates survived multi-horizon validation")
+        else:
+            print("\n[Mine] No candidates survived mining/bootstrap filters")
+            _log_pipeline_run(market, "mine_empty", 0, "no candidates survived mining/bootstrap filters")
 
-    # Step 4: Health check (always run)
+    # Health check runs before promotion so same-day retirements free slots immediately.
     step4_health_check(market)
+
+    if enriched:
+        step3_select_and_promote(enriched, market)
 
     # Step 5: Agent regime-aware weight selection (optional)
     if use_agent:
@@ -584,6 +777,7 @@ def run(market: str, skip_mine: bool = False, max_factors: int = 500, use_agent:
                 ]
                 print(f"\n[5/5] Agent regime-aware selection ({len(promoted_dicts)} promoted factors)...")
                 weights = agent_regime_selection(promoted_dicts, market)
+                _save_factor_weights(market, weights)
                 for fid, w in weights.items():
                     print(f"  {fid}: {w*100:.1f}%")
 

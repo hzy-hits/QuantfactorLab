@@ -1,13 +1,21 @@
 """
-GPU-accelerated bootstrap significance test for factor IC.
+Bootstrap significance test for factor IC.
 
-Uses CuPy (GPU numpy) to run 100,000 permutation tests in seconds.
-Falls back to CPU numpy if no GPU available.
+Default backend is the Rust bootstrap binary for production pipeline use.
+Python/CuPy remains available as a fallback or for local experimentation.
+The test works on the daily IC series with a circular moving block bootstrap,
+which preserves short-range serial dependence from overlapping forward returns.
 
 Usage:
     result = bootstrap_significance(factor_values, forward_returns, dates, n_bootstrap=100000)
     print(result["p_value"])  # < 0.01 = statistically significant
 """
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -21,116 +29,78 @@ except Exception:
     GPU_AVAILABLE = False
 
 
-def bootstrap_significance(
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RUST_BOOTSTRAP_DIR = REPO_ROOT / "rust-bootstrap"
+RUST_BOOTSTRAP_MANIFEST = RUST_BOOTSTRAP_DIR / "Cargo.toml"
+RUST_BOOTSTRAP_TARGET_DIR = Path(
+    os.environ.get("FACTOR_LAB_RUST_BOOTSTRAP_TARGET_DIR", "/tmp/factor-lab-rust-bootstrap-target")
+)
+RUST_BOOTSTRAP_BIN = RUST_BOOTSTRAP_TARGET_DIR / "release" / "rust-bootstrap"
+_RUST_BOOTSTRAP_STATE: dict[str, bool] = {"checked": False, "available": False}
+
+
+def _daily_ic_series(
     factor_values: pd.Series,
     forward_returns: pd.Series,
     dates: pd.Series,
-    n_bootstrap: int = 100_000,
-    seed: int = 42,
-) -> dict:
-    """
-    Permutation bootstrap test for factor IC significance.
-
-    Procedure:
-    1. Compute real IC (daily cross-sectional Spearman, averaged)
-    2. Shuffle date-factor alignment n_bootstrap times (preserve cross-section)
-    3. Compute null IC distribution
-    4. p-value = fraction of null ICs more extreme than real IC
-
-    Returns:
-        {
-            "real_ic": float,
-            "p_value": float,       # < 0.01 = significant at 99%
-            "null_mean": float,
-            "null_std": float,
-            "percentile": float,    # where real IC sits in null distribution
-            "significant_01": bool, # p < 0.01
-            "significant_05": bool, # p < 0.05
-            "n_bootstrap": int,
-            "gpu": bool,
-        }
-    """
-    # Build daily IC matrix
+) -> np.ndarray:
+    """Build the daily cross-sectional IC series used by both backends."""
     df = pd.DataFrame({
         "date": dates.values,
         "factor": factor_values.values,
         "fwd": forward_returns.values,
     }).dropna()
 
-    # Group by date, compute daily Spearman IC
-    daily_groups = []
-    unique_dates = sorted(df["date"].unique())
-
-    for dt in unique_dates:
-        mask = df["date"] == dt
-        day_f = df.loc[mask, "factor"].values
-        day_r = df.loc[mask, "fwd"].values
-        if len(day_f) < 10:
+    daily_ics = []
+    for _, group in df.groupby("date", sort=True):
+        if len(group) < 10:
             continue
-        daily_groups.append((day_f, day_r))
+        ic = _spearman_ic(group["factor"].to_numpy(), group["fwd"].to_numpy())
+        if not np.isnan(ic):
+            daily_ics.append(ic)
 
-    if len(daily_groups) < 10:
+    return np.asarray(daily_ics, dtype=np.float64)
+
+
+def _python_bootstrap_from_daily_ics(
+    daily_ics: np.ndarray,
+    n_bootstrap: int = 100_000,
+    seed: int = 42,
+    block_size: int | None = None,
+) -> dict:
+    """Python/CuPy backend using the centered daily IC series."""
+    n_days = len(daily_ics)
+    if n_days < 10:
         return {
             "real_ic": 0.0, "p_value": 1.0, "null_mean": 0.0, "null_std": 0.0,
             "percentile": 50.0, "significant_01": False, "significant_05": False,
-            "n_bootstrap": 0, "gpu": False,
+            "n_bootstrap": 0, "block_size": 0, "gpu": False, "backend": "python",
         }
 
-    n_days = len(daily_groups)
+    real_ic = float(np.nanmean(daily_ics))
+    centered_ics = daily_ics - real_ic
 
-    # Compute real IC: average of daily Spearman correlations
-    real_daily_ics = np.array([_spearman_ic(g[0], g[1]) for g in daily_groups])
-    real_ic = float(np.nanmean(real_daily_ics))
+    if block_size is None:
+        block_size = max(5, int(round(np.sqrt(n_days))))
+    block_size = min(n_days, max(1, int(block_size)))
+    n_blocks = (n_days + block_size - 1) // block_size
 
-    # Bootstrap: shuffle which date's returns go with which date's factors
-    # This preserves cross-sectional structure but breaks time alignment
     xp = cp if GPU_AVAILABLE else np
+    rng = cp.random.default_rng(seed) if GPU_AVAILABLE else np.random.default_rng(seed)
+    centered = xp.asarray(centered_ics, dtype=xp.float32)
 
-    if GPU_AVAILABLE:
-        rng = cp.random.default_rng(seed)
-    else:
-        rng = np.random.default_rng(seed)
+    starts = rng.integers(0, n_days, size=(n_bootstrap, n_blocks))
+    starts = starts.astype(xp.int32, copy=False)
+    offsets = xp.arange(block_size, dtype=xp.int32)
+    boot_indices = (starts[..., None] + offsets).reshape(n_bootstrap, n_blocks * block_size) % n_days
+    boot_indices = boot_indices[:, :n_days]
+    null_ics = xp.mean(centered[boot_indices], axis=1)
 
-    # Pre-compute rank arrays for speed
-    factor_ranks = []
-    return_ranks = []
-    for day_f, day_r in daily_groups:
-        factor_ranks.append(_rankdata(day_f))
-        return_ranks.append(_rankdata(day_r))
-
-    # Convert to GPU arrays if available
-    # Strategy: shuffle the daily IC array (which day's returns pair with which factors)
-    # This is much faster than re-ranking per permutation
-    daily_ics_array = xp.array(real_daily_ics, dtype=xp.float32)
-
-    # For each bootstrap: resample daily ICs with replacement → compute mean
-    # This tests: "is the mean IC significantly different from 0?"
-    # Block bootstrap: resample days with replacement
-    null_ics = xp.zeros(n_bootstrap, dtype=xp.float32)
-
-    # Batch generate all random indices at once (GPU efficient)
-    boot_indices = rng.integers(0, n_days, size=(n_bootstrap, n_days))
-
-    # Vectorized mean computation
-    if GPU_AVAILABLE:
-        daily_ics_gpu = cp.array(real_daily_ics, dtype=cp.float32)
-        for i in range(n_bootstrap):
-            # Resample with replacement and shuffle sign (under null: IC mean = 0)
-            signs = rng.choice(cp.array([-1.0, 1.0], dtype=cp.float32), size=n_days)
-            null_ics[i] = cp.mean(daily_ics_gpu[boot_indices[i]] * signs)
-    else:
-        daily_ics_np = np.array(real_daily_ics, dtype=np.float32)
-        for i in range(n_bootstrap):
-            signs = rng.choice(np.array([-1.0, 1.0], dtype=np.float32), size=n_days)
-            null_ics[i] = np.mean(daily_ics_np[boot_indices[i]] * signs)
-
-    # Convert back to numpy for stats
     if GPU_AVAILABLE:
         null_ics_np = cp.asnumpy(null_ics)
     else:
         null_ics_np = null_ics
 
-    # p-value: two-sided test (how often is null |IC| >= real |IC|?)
     p_value = float(np.mean(np.abs(null_ics_np) >= abs(real_ic)))
     percentile = float(np.mean(null_ics_np < real_ic) * 100)
 
@@ -143,8 +113,175 @@ def bootstrap_significance(
         "significant_01": p_value < 0.01,
         "significant_05": p_value < 0.05,
         "n_bootstrap": n_bootstrap,
+        "block_size": block_size,
         "gpu": GPU_AVAILABLE,
+        "backend": "python_gpu" if GPU_AVAILABLE else "python_cpu",
     }
+
+
+def _ensure_rust_bootstrap_binary() -> Path | None:
+    """Build or locate the Rust bootstrap binary once per process."""
+    source_files = [RUST_BOOTSTRAP_MANIFEST, *RUST_BOOTSTRAP_DIR.glob("src/**/*.rs")]
+    needs_build = not RUST_BOOTSTRAP_BIN.exists()
+    if not needs_build and source_files:
+        latest_source_mtime = max(path.stat().st_mtime for path in source_files if path.exists())
+        needs_build = RUST_BOOTSTRAP_BIN.stat().st_mtime < latest_source_mtime
+
+    if not needs_build:
+        _RUST_BOOTSTRAP_STATE["checked"] = True
+        _RUST_BOOTSTRAP_STATE["available"] = True
+        return RUST_BOOTSTRAP_BIN
+
+    if _RUST_BOOTSTRAP_STATE["checked"] and not _RUST_BOOTSTRAP_STATE["available"]:
+        return None
+
+    _RUST_BOOTSTRAP_STATE["checked"] = True
+    cargo = shutil.which("cargo")
+    if cargo is None or not RUST_BOOTSTRAP_MANIFEST.exists():
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                cargo,
+                "build",
+                "--release",
+                "--manifest-path",
+                str(RUST_BOOTSTRAP_MANIFEST),
+                "--target-dir",
+                str(RUST_BOOTSTRAP_TARGET_DIR),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=str(REPO_ROOT),
+        )
+    except Exception as exc:
+        print(f"  Rust bootstrap build failed: {exc}")
+        return None
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no output").strip()
+        print(f"  Rust bootstrap build failed: {detail[:240]}")
+        return None
+
+    if RUST_BOOTSTRAP_BIN.exists():
+        _RUST_BOOTSTRAP_STATE["available"] = True
+        return RUST_BOOTSTRAP_BIN
+
+    return None
+
+
+def _rust_bootstrap_from_daily_ics(
+    daily_ics: np.ndarray,
+    n_bootstrap: int = 100_000,
+    seed: int = 42,
+    block_size: int | None = None,
+) -> dict | None:
+    """Run the Rust bootstrap binary on a precomputed daily IC series."""
+    if len(daily_ics) < 10:
+        return {
+            "real_ic": 0.0, "p_value": 1.0, "null_mean": 0.0, "null_std": 0.0,
+            "percentile": 50.0, "significant_01": False, "significant_05": False,
+            "n_bootstrap": 0, "block_size": 0, "gpu": False, "backend": "rust",
+        }
+
+    binary = _ensure_rust_bootstrap_binary()
+    if binary is None:
+        return None
+
+    cmd = [str(binary), "--n", str(n_bootstrap), "--seed", str(seed)]
+    if block_size is not None:
+        cmd.extend(["--block-size", str(block_size)])
+
+    payload = " ".join(f"{value:.12g}" for value in daily_ics)
+    try:
+        result = subprocess.run(
+            cmd,
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            cwd=str(REPO_ROOT),
+        )
+    except Exception as exc:
+        print(f"  Rust bootstrap execution failed: {exc}")
+        return None
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no output").strip()
+        print(f"  Rust bootstrap execution failed: {detail[:240]}")
+        return None
+
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        print(f"  Rust bootstrap JSON parse failed: {exc}")
+        return None
+
+    parsed["gpu"] = False
+    parsed["backend"] = "rust"
+    return parsed
+
+
+def bootstrap_significance(
+    factor_values: pd.Series,
+    forward_returns: pd.Series,
+    dates: pd.Series,
+    n_bootstrap: int = 100_000,
+    seed: int = 42,
+    block_size: int | None = None,
+    backend: str = "rust",
+) -> dict:
+    """
+    Moving block bootstrap test for factor IC significance.
+
+    Procedure:
+    1. Compute real IC (daily cross-sectional Spearman, averaged)
+    2. Center the daily IC series under the null hypothesis mean=0
+    3. Circular block-bootstrap the centered series n_bootstrap times
+    4. p-value = fraction of null means more extreme than the real mean IC
+
+    Returns:
+        {
+            "real_ic": float,
+            "p_value": float,       # < 0.01 = significant at 99%
+            "null_mean": float,
+            "null_std": float,
+            "percentile": float,    # where real IC sits in null distribution
+            "significant_01": bool, # p < 0.01
+            "significant_05": bool, # p < 0.05
+            "n_bootstrap": int,
+            "block_size": int,
+            "gpu": bool,
+            "backend": str,
+        }
+    """
+    daily_ics = _daily_ic_series(factor_values, forward_returns, dates)
+    if len(daily_ics) < 10:
+        return {
+            "real_ic": 0.0, "p_value": 1.0, "null_mean": 0.0, "null_std": 0.0,
+            "percentile": 50.0, "significant_01": False, "significant_05": False,
+            "n_bootstrap": 0, "block_size": 0, "gpu": False, "backend": backend,
+        }
+
+    backend = backend.lower()
+    if backend == "rust":
+        result = _rust_bootstrap_from_daily_ics(
+            daily_ics,
+            n_bootstrap=n_bootstrap,
+            seed=seed,
+            block_size=block_size,
+        )
+        if result is not None:
+            return result
+
+    return _python_bootstrap_from_daily_ics(
+        daily_ics,
+        n_bootstrap=n_bootstrap,
+        seed=seed,
+        block_size=block_size,
+    )
 
 
 def batch_bootstrap(
@@ -154,6 +291,7 @@ def batch_bootstrap(
     sym_col: str = "ts_code",
     date_col: str = "trade_date",
     n_bootstrap: int = 100_000,
+    backend: str = "rust",
 ) -> list[dict]:
     """
     Run bootstrap significance test on a batch of factor candidates.
@@ -167,6 +305,7 @@ def batch_bootstrap(
 
     tested = 0
     significant = 0
+    used_backends: set[str] = set()
 
     for c in candidates:
         try:
@@ -186,11 +325,14 @@ def batch_bootstrap(
             result = bootstrap_significance(
                 merged["factor_value"], merged["fwd_5d"], merged[date_col],
                 n_bootstrap=n_bootstrap,
+                backend=backend,
             )
 
             c["bootstrap_p"] = result["p_value"]
             c["bootstrap_significant"] = result["significant_01"]
             c["bootstrap_percentile"] = result["percentile"]
+            c["bootstrap_backend"] = result.get("backend", backend)
+            used_backends.add(c["bootstrap_backend"])
 
             tested += 1
             if result["significant_01"]:
@@ -200,7 +342,8 @@ def batch_bootstrap(
             c["bootstrap_p"] = 1.0
             c["bootstrap_significant"] = False
 
-    print(f"  Bootstrap: {tested} tested, {significant} significant (p<0.01), GPU={'yes' if GPU_AVAILABLE else 'no'}")
+    backend_desc = ",".join(sorted(used_backends)) if used_backends else backend
+    print(f"  Bootstrap: {tested} tested, {significant} significant (p<0.01), backend={backend_desc}")
     return candidates
 
 
@@ -211,14 +354,28 @@ def _spearman_ic(x: np.ndarray, y: np.ndarray) -> float:
         return 0.0
     rx = _rankdata(x)
     ry = _rankdata(y)
-    d = rx - ry
-    return float(1.0 - 6.0 * np.sum(d * d) / (n * (n * n - 1)))
+    rx = rx - rx.mean()
+    ry = ry - ry.mean()
+    denom = np.sqrt(np.sum(rx * rx) * np.sum(ry * ry))
+    if denom == 0:
+        return 0.0
+    return float(np.sum(rx * ry) / denom)
 
 
 def _rankdata(x: np.ndarray) -> np.ndarray:
-    """Fast rank (average method)."""
+    """Average ranks with tie handling."""
     n = len(x)
     ranks = np.empty(n, dtype=np.float64)
-    idx = np.argsort(x)
-    ranks[idx] = np.arange(1, n + 1, dtype=np.float64)
+    idx = np.argsort(x, kind="mergesort")
+    sorted_x = x[idx]
+
+    start = 0
+    while start < n:
+        end = start + 1
+        while end < n and sorted_x[end] == sorted_x[start]:
+            end += 1
+        avg_rank = 0.5 * (start + end - 1) + 1.0
+        ranks[idx[start:end]] = avg_rank
+        start = end
+
     return ranks
