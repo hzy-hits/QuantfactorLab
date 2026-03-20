@@ -192,7 +192,18 @@ CONFIGS = {
         "db_path": "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb",
         "table": "prices", "sym_col": "ts_code", "date_col": "trade_date",
         "close_col": "close", "vol_col": "vol",
-        "sql": "SELECT ts_code, trade_date, open, high, low, close, vol as volume, amount FROM prices WHERE close > 0 ORDER BY ts_code, trade_date",
+        "universe_top_n": 1000,
+        "sql": """
+            SELECT p.ts_code, p.trade_date, p.open, p.high, p.low, p.close,
+                   p.vol as volume, p.amount,
+                   db.turnover_rate, db.pe_ttm, db.pb, db.ps_ttm,
+                   db.total_mv AS market_cap, db.circ_mv AS circ_market_cap
+            FROM prices p
+            LEFT JOIN daily_basic db
+                ON p.ts_code = db.ts_code AND p.trade_date = db.trade_date
+            WHERE p.close > 0
+            ORDER BY p.ts_code, p.trade_date
+        """,
     },
     "us": {
         "db_path": "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb",
@@ -212,6 +223,15 @@ def run_batch(market: str, max_factors: int = 500, output_path: str | None = Non
     con = duckdb.connect(cfg["db_path"], read_only=True)
     prices = con.execute(cfg["sql"]).fetchdf()
     con.close()
+
+    # Universe filter: keep only top N stocks by market_cap each day
+    top_n = cfg.get("universe_top_n")
+    if top_n and "market_cap" in prices.columns:
+        prices["_mcap_rank"] = prices.groupby("trade_date")["market_cap"].rank(
+            ascending=False, method="first", na_option="bottom"
+        )
+        prices = prices[prices["_mcap_rank"] <= top_n].drop(columns=["_mcap_rank"]).reset_index(drop=True)
+        print(f"  Universe filter: top {top_n} by market_cap")
 
     fwd = compute_forward_returns(cfg["db_path"], cfg["table"], cfg["date_col"], cfg["close_col"],
                                   cfg["sym_col"] if market == "cn" else "symbol")

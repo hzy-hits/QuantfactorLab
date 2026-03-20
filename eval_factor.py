@@ -48,6 +48,7 @@ MARKET_CONFIGS = {
         "vol_col": "vol",
         "cost_per_trade": 0.003,
         "oos_start": "2025-10-01",
+        "universe_top_n": 1000,  # Rolling top N by market_cap per day
     },
     "us": {
         "db_path": "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb",
@@ -82,27 +83,75 @@ def _cached_load(market: str, loader, name: str, max_age_hours: int = 24):
 # so DSL formulas can reference any column that exists in the pipeline DB.
 # ---------------------------------------------------------------------------
 def _load_prices_raw(market: str) -> pd.DataFrame:
-    """Load raw prices from pipeline DuckDB. Uses SELECT * for full feature access."""
+    """Load raw prices from pipeline DuckDB with enrichment from auxiliary tables."""
     cfg = MARKET_CONFIGS[market]
     con = duckdb.connect(cfg["db_path"], read_only=True)
-    sql = f"""
-        SELECT *
-        FROM {cfg['table']}
-        WHERE {cfg['close_col']} > 0
-        ORDER BY {cfg['sym_col']}, {cfg['date_col']}
-    """
+    sym = cfg["sym_col"]
+    dt = cfg["date_col"]
+    close_col = cfg["close_col"]
+
+    if market == "cn":
+        # CN: JOIN prices with daily_basic (fundamentals) + moneyflow + margin_detail
+        sql = f"""
+            SELECT
+                p.*,
+                db.turnover_rate,
+                db.volume_ratio,
+                db.pe_ttm,
+                db.pb,
+                db.ps_ttm,
+                db.total_mv AS market_cap,
+                db.circ_mv AS circ_market_cap,
+                mf.net_mf_amount,
+                mf.buy_elg_amount - mf.sell_elg_amount AS large_net_in,
+                mg.rzye AS margin_balance
+            FROM {cfg['table']} p
+            LEFT JOIN daily_basic db
+                ON p.{sym} = db.ts_code AND p.{dt} = db.trade_date
+            LEFT JOIN moneyflow mf
+                ON p.{sym} = mf.ts_code AND p.{dt} = mf.trade_date
+            LEFT JOIN margin_detail mg
+                ON p.{sym} = mg.ts_code AND p.{dt} = mg.trade_date
+            WHERE p.{close_col} > 0
+            ORDER BY p.{sym}, p.{dt}
+        """
+    else:
+        # US: explicit column list to avoid duplicate 'close' from adj_close rename
+        sql = f"""
+            SELECT {sym}, {dt}, open, high, low, {close_col}, volume
+            FROM {cfg['table']}
+            WHERE {close_col} > 0
+            ORDER BY {sym}, {dt}
+        """
+
     try:
         df = con.execute(sql).fetchdf()
     finally:
         con.close()
+
     # Normalize key column names for compute_factor compatibility
     rename = {}
-    if cfg["close_col"] != "close":
-        rename[cfg["close_col"]] = "close"
+    if close_col != "close":
+        rename[close_col] = "close"
     if cfg["vol_col"] != "volume":
         rename[cfg["vol_col"]] = "volume"
     if rename:
         df = df.rename(columns=rename)
+
+    # Compute margin_delta_5d for CN if margin_balance exists
+    if market == "cn" and "margin_balance" in df.columns:
+        df["margin_delta_5d"] = df.groupby(sym)["margin_balance"].transform(
+            lambda s: s - s.shift(5)
+        )
+
+    # Universe filter: keep only top N stocks by market_cap each day
+    top_n = cfg.get("universe_top_n")
+    if top_n and "market_cap" in df.columns:
+        df["_mcap_rank"] = df.groupby(dt)["market_cap"].rank(
+            ascending=False, method="first", na_option="bottom"
+        )
+        df = df[df["_mcap_rank"] <= top_n].drop(columns=["_mcap_rank"]).reset_index(drop=True)
+
     return df
 
 

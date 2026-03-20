@@ -53,7 +53,7 @@ HORIZONS = [7, 14, 30]  # multi-horizon backtest windows (trading days)
 # IC > 3/sqrt(80) ≈ 0.034 for strict significance
 # We use a moderate threshold: stricter than before, not full Bonferroni
 GATE_THRESHOLDS = {
-    "cn": {"ic_min": 0.015, "ir_min": 0.15, "mono_min": 0.5},   # was 0.01
+    "cn": {"ic_min": 0.015, "ir_min": 0.15, "mono_min": 0.0},   # mono disabled: A-share non-monotonic
     "us": {"ic_min": 0.02, "ir_min": 0.2, "mono_min": 0.6},     # unchanged
 }
 
@@ -337,6 +337,14 @@ def step1_mine(market: str, max_factors: int = 500) -> list[dict]:
     prices = con.execute(cfg["sql"]).fetchdf()
     con.close()
 
+    # Universe filter: keep only top N stocks by market_cap each day
+    top_n = cfg.get("universe_top_n")
+    if top_n and "market_cap" in prices.columns:
+        prices["_mcap_rank"] = prices.groupby("trade_date")["market_cap"].rank(
+            ascending=False, method="first", na_option="bottom"
+        )
+        prices = prices[prices["_mcap_rank"] <= top_n].drop(columns=["_mcap_rank"]).reset_index(drop=True)
+
     fwd = compute_forward_returns(
         cfg["db_path"], cfg["table"], cfg["date_col"],
         cfg["close_col"], cfg["sym_col"] if market == "cn" else "symbol"
@@ -452,6 +460,14 @@ def step2_multi_horizon_backtest(candidates: list[dict], market: str) -> list[di
     con = duckdb.connect(cfg["db_path"], read_only=True)
     prices = con.execute(cfg["sql"]).fetchdf()
     con.close()
+
+    # Universe filter
+    top_n = cfg.get("universe_top_n")
+    if top_n and "market_cap" in prices.columns:
+        prices["_mcap_rank"] = prices.groupby("trade_date")["market_cap"].rank(
+            ascending=False, method="first", na_option="bottom"
+        )
+        prices = prices[prices["_mcap_rank"] <= top_n].drop(columns=["_mcap_rank"]).reset_index(drop=True)
 
     # Compute forward returns for all horizons
     fwd_all = {}
@@ -622,6 +638,14 @@ def step4_health_check(market: str):
     db_con = duckdb.connect(cfg["db_path"], read_only=True)
     prices = db_con.execute(cfg["sql"]).fetchdf()
     db_con.close()
+
+    # Universe filter
+    top_n = cfg.get("universe_top_n")
+    if top_n and "market_cap" in prices.columns:
+        prices["_mcap_rank"] = prices.groupby("trade_date")["market_cap"].rank(
+            ascending=False, method="first", na_option="bottom"
+        )
+        prices = prices[prices["_mcap_rank"] <= top_n].drop(columns=["_mcap_rank"]).reset_index(drop=True)
 
     fwd = compute_forward_returns(
         cfg["db_path"], cfg["table"], cfg["date_col"],

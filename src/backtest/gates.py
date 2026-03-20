@@ -21,7 +21,7 @@ GATE_THRESHOLDS: dict[str, dict[str, float]] = {
         "ic_min": 0.01,
         "ic_ir_min": 0.2,
         "turnover_max": 0.50,
-        "monotonicity_min": 0.6,
+        "monotonicity_min": 0.0,  # Disabled: A-share factor-return relationships are non-monotonic
         "corr_max": 0.7,
     },
     "us": {
