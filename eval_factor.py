@@ -82,10 +82,21 @@ def _cached_load(market: str, loader, name: str, max_age_hours: int = 24):
 # Uses SELECT * to include all available columns (amount, turnover_rate, etc.)
 # so DSL formulas can reference any column that exists in the pipeline DB.
 # ---------------------------------------------------------------------------
+def _open_db_readonly(db_path: str):
+    """Open DuckDB read-only, falling back to file copy if write-locked."""
+    try:
+        return duckdb.connect(db_path, read_only=True)
+    except Exception:
+        import shutil, tempfile
+        tmp = tempfile.mktemp(suffix=".duckdb")
+        shutil.copy2(db_path, tmp)
+        return duckdb.connect(tmp, read_only=True)
+
+
 def _load_prices_raw(market: str) -> pd.DataFrame:
     """Load raw prices from pipeline DuckDB with enrichment from auxiliary tables."""
     cfg = MARKET_CONFIGS[market]
-    con = duckdb.connect(cfg["db_path"], read_only=True)
+    con = _open_db_readonly(cfg["db_path"])
     sym = cfg["sym_col"]
     dt = cfg["date_col"]
     close_col = cfg["close_col"]
@@ -162,7 +173,7 @@ def load_prices(market: str) -> pd.DataFrame:
 def _compute_fwd_raw(market: str) -> pd.DataFrame:
     """Compute 5-day forward returns via DuckDB window function."""
     cfg = MARKET_CONFIGS[market]
-    con = duckdb.connect(cfg["db_path"], read_only=True)
+    con = _open_db_readonly(cfg["db_path"])
     sql = f"""
         SELECT {cfg['sym_col']}, {cfg['date_col']},
                LEAD({cfg['close_col']}, 5) OVER w / {cfg['close_col']} - 1 AS fwd_5d

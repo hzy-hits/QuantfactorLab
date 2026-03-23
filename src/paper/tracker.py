@@ -5,7 +5,11 @@ and measures their actual returns the next day.
 """
 from __future__ import annotations
 
+import shutil
+import tempfile
+import time
 from datetime import date, timedelta
+from pathlib import Path
 
 import duckdb
 import numpy as np
@@ -13,6 +17,21 @@ import pandas as pd
 
 FACTOR_LAB_DB = "/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb"
 US_DB = "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb"
+
+
+def _open_us_db_readonly() -> duckdb.DuckDBPyConnection:
+    """Open US DB read-only. If locked, copy to temp file first.
+
+    DuckDB is single-writer: even read_only=True fails when another process
+    holds the write lock. Copying the file bypasses this entirely.
+    """
+    try:
+        return duckdb.connect(US_DB, read_only=True)
+    except Exception:
+        # DB is locked — copy to temp and read from there
+        tmp = Path(tempfile.mkdtemp()) / "quant_readonly.duckdb"
+        shutil.copy2(US_DB, tmp)
+        return duckdb.connect(str(tmp), read_only=True)
 
 N_PICKS = 20  # top/bottom N stocks
 
@@ -51,7 +70,7 @@ def init_tables():
 
 def _get_latest_trade_date() -> str:
     """Get the most recent trade date in US prices_daily."""
-    con = duckdb.connect(US_DB, read_only=True)
+    con = _open_us_db_readonly()
     r = con.execute("SELECT MAX(date) FROM prices_daily").fetchone()
     con.close()
     return str(r[0])
@@ -59,7 +78,7 @@ def _get_latest_trade_date() -> str:
 
 def _get_prev_trade_date(dt: str) -> str | None:
     """Get the trading date before dt."""
-    con = duckdb.connect(US_DB, read_only=True)
+    con = _open_us_db_readonly()
     r = con.execute(
         "SELECT MAX(date) FROM prices_daily WHERE date < ?", [dt]
     ).fetchone()
@@ -79,7 +98,7 @@ def record(as_of: str | None = None, n: int = N_PICKS):
         as_of = _get_latest_trade_date()
 
     # Read composite scores, filtered to stocks with recent price data
-    con = duckdb.connect(US_DB, read_only=True)
+    con = _open_us_db_readonly()
     scores = con.execute("""
         SELECT a.symbol, a.trend_prob AS score
         FROM analysis_daily a
@@ -168,7 +187,7 @@ def evaluate(as_of: str | None = None):
     short_syms = picks[picks["side"] == "short"]["symbol"].tolist()
 
     # Get next trading day
-    us_con = duckdb.connect(US_DB, read_only=True)
+    us_con = _open_us_db_readonly()
     eval_date_r = us_con.execute(
         "SELECT MIN(date) FROM prices_daily WHERE date > ?", [as_of]
     ).fetchone()
