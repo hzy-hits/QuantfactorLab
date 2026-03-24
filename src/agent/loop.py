@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 MARKET_CONFIGS = {
     "cn": {
+        "market": "cn",
         "db_path": "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb",
         "table": "prices",
         "sym_col": "ts_code",
@@ -58,8 +59,10 @@ MARKET_CONFIGS = {
         "vol_col": "vol",
         "cost_per_trade": 0.003,
         "oos_start": "2025-10-01",
+        "universe_top_n": 1000,
     },
     "us": {
+        "market": "us",
         "db_path": "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb",
         "table": "prices_daily",
         "sym_col": "symbol",
@@ -77,23 +80,55 @@ MARKET_CONFIGS = {
 # ---------------------------------------------------------------------------
 
 def _load_prices(cfg: dict) -> pd.DataFrame:
-    """Load raw prices from the pipeline DuckDB."""
-    import duckdb
+    """Load raw prices from the pipeline DuckDB with enrichment."""
+    import duckdb, shutil, tempfile
 
-    con = duckdb.connect(cfg["db_path"], read_only=True)
-    sql = f"""
-        SELECT {cfg['sym_col']}, {cfg['date_col']},
-               {cfg['close_col']} AS close,
-               open, high, low,
-               {cfg['vol_col']} AS volume
-        FROM {cfg['table']}
-        WHERE {cfg['close_col']} > 0
-        ORDER BY {cfg['sym_col']}, {cfg['date_col']}
-    """
+    db_path = cfg["db_path"]
+    try:
+        con = duckdb.connect(db_path, read_only=True)
+    except Exception:
+        tmp = tempfile.mktemp(suffix=".duckdb")
+        shutil.copy2(db_path, tmp)
+        con = duckdb.connect(tmp, read_only=True)
+
+    sym = cfg["sym_col"]
+    dt = cfg["date_col"]
+    market = cfg.get("market", "")
+
+    if market == "cn":
+        sql = f"""
+            SELECT p.{sym}, p.{dt},
+                   p.{cfg['close_col']} AS close, p.open, p.high, p.low,
+                   p.{cfg['vol_col']} AS volume, p.amount,
+                   db.turnover_rate, db.pe_ttm, db.pb, db.ps_ttm,
+                   db.total_mv AS market_cap, db.circ_mv AS circ_market_cap
+            FROM {cfg['table']} p
+            LEFT JOIN daily_basic db
+                ON p.{sym} = db.ts_code AND p.{dt} = db.trade_date
+            WHERE p.{cfg['close_col']} > 0
+            ORDER BY p.{sym}, p.{dt}
+        """
+    else:
+        sql = f"""
+            SELECT {sym}, {dt},
+                   {cfg['close_col']} AS close,
+                   open, high, low,
+                   {cfg['vol_col']} AS volume
+            FROM {cfg['table']}
+            WHERE {cfg['close_col']} > 0
+            ORDER BY {sym}, {dt}
+        """
     try:
         df = con.execute(sql).fetchdf()
     finally:
         con.close()
+
+    # Universe filter for CN
+    top_n = cfg.get("universe_top_n")
+    if top_n and "market_cap" in df.columns:
+        df["_r"] = df.groupby(dt)["market_cap"].rank(ascending=False, method="first", na_option="bottom")
+        df = df[df["_r"] <= top_n].drop(columns=["_r"]).reset_index(drop=True)
+
     return df
 
 
