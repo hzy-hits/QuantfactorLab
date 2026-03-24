@@ -42,7 +42,7 @@ from src.mining.batch_mine import generate_factor_formulas, CONFIGS
 FACTOR_LAB_DB = "/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb"
 CANDIDATE_POOL_SIZE = 30
 PROMOTE_COUNT = 3
-MAX_PROMOTED = 10  # max active promoted factors at any time
+MAX_PROMOTED = 30  # max active promoted factors at any time
 
 HORIZONS = [7, 14, 30]  # multi-horizon backtest windows (trading days)
 
