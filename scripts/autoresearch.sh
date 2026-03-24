@@ -1,12 +1,10 @@
 #!/bin/bash
 # Autoresearch: AI-driven factor mining via Claude agent loop.
-# Runs src.agent.loop which uses Claude to generate hypotheses,
-# write DSL formulas, evaluate them, and promote winners.
+# Runs nightly Mon-Fri 22:00-02:00 CST (4 hours).
+# CN 2 hours (~150 experiments), US 2 hours (~150 experiments).
 #
-# Unlike batch_mine (fixed templates), this discovers genuinely new factors.
-#
-# Cron: Tue/Thu 22:00 CST (after market hours, before daily pipeline at 04:00)
-#   0 22 * * 2,4 cd /home/ivena/coding/python/factor-lab && bash scripts/autoresearch.sh >> logs/autoresearch.log 2>&1
+# Cron: Mon-Fri 22:00 CST
+#   0 22 * * 1-5 cd /home/ivena/coding/python/factor-lab && bash scripts/autoresearch.sh >> logs/autoresearch.log 2>&1
 
 set -uo pipefail
 
@@ -14,34 +12,43 @@ PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ_DIR"
 mkdir -p logs reports
 
+BUDGET=150  # ~2 hours per market at ~1 min/experiment
+DATE=$(date +%Y%m%d)
+PYTHON=/home/ivena/miniconda3/bin/python3
+
 echo "=========================================="
-echo "  Autoresearch Session"
-echo "  $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  Autoresearch Session — $DATE"
+echo "  Start: $(date '+%H:%M:%S')"
+echo "  Budget: $BUDGET per market (CN+US)"
 echo "=========================================="
 
-# CN market: 50 experiments
+# CN market: ~2 hours
 echo ""
-echo "=== A-Share Autoresearch ==="
-/home/ivena/miniconda3/bin/python3 -m src.agent.loop \
+echo "=== [$(date '+%H:%M:%S')] A-Share Autoresearch ==="
+timeout 7200 $PYTHON -m src.agent.loop \
     --market cn \
-    --budget 50 \
-    --output "reports/autoresearch_cn_$(date +%Y%m%d).md" \
-    || echo "CN autoresearch failed (exit $?)"
+    --budget $BUDGET \
+    --output "reports/autoresearch_cn_${DATE}.md" \
+    || echo "CN autoresearch ended (exit $?)"
 
-# US market: 50 experiments
+echo "=== [$(date '+%H:%M:%S')] CN done ==="
+
+# US market: ~2 hours
 echo ""
-echo "=== US Autoresearch ==="
-/home/ivena/miniconda3/bin/python3 -m src.agent.loop \
+echo "=== [$(date '+%H:%M:%S')] US Autoresearch ==="
+timeout 7200 $PYTHON -m src.agent.loop \
     --market us \
-    --budget 50 \
-    --output "reports/autoresearch_us_$(date +%Y%m%d).md" \
-    || echo "US autoresearch failed (exit $?)"
+    --budget $BUDGET \
+    --output "reports/autoresearch_us_${DATE}.md" \
+    || echo "US autoresearch ended (exit $?)"
+
+echo "=== [$(date '+%H:%M:%S')] US done ==="
 
 # Export new factors to pipeline DBs
 echo ""
-echo "=== Exporting to pipelines ==="
-/home/ivena/miniconda3/bin/python3 -m src.mining.export_to_pipeline --market cn || echo "CN export failed"
-/home/ivena/miniconda3/bin/python3 -m src.mining.export_to_pipeline --market us || echo "US export failed"
+echo "=== [$(date '+%H:%M:%S')] Exporting to pipelines ==="
+$PYTHON -m src.mining.export_to_pipeline --market cn || echo "CN export failed"
+$PYTHON -m src.mining.export_to_pipeline --market us || echo "US export failed"
 
 echo ""
 echo "=========================================="

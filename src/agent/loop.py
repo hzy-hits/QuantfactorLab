@@ -788,7 +788,7 @@ class FactorSession:
                 ["claude", "-p", prompt],
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=300,  # 5 min — long prompts need time
             )
             if result.returncode == 0:
                 return result.stdout.strip()

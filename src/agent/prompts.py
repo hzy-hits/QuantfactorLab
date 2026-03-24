@@ -40,13 +40,11 @@ Infix: + - * /    Unary: -
 ### Max expression depth: 4
 ### Max expression length: 200 characters
 
-## Available features
-# Price: close, open, high, low, vwap, ret_1d, ret_5d, ret_20d
-# Volume: volume, amount, turnover_rate, volume_ratio
-# Technical: rsi_14, bb_position, ma20_dist, ma60_dist, atr_14, obv
-# Fundamental: pe_ttm, pb, market_cap, ps_ttm
-# CN-only: circ_market_cap, net_mf_amount, large_net_in, margin_balance, margin_delta_5d
-# US-only: dividend_yield, vix
+## Available features (only use these — others will cause errors)
+# Price: close, open, high, low, ret_1d, ret_5d, ret_20d
+# Volume: volume, amount (CN only)
+# CN-only: turnover_rate, pe_ttm, pb, ps_ttm, market_cap, circ_market_cap
+# US-only: (price + volume only — no fundamentals in real-time)
 """
 
 # ---------------------------------------------------------------------------
