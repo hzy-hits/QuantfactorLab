@@ -171,7 +171,8 @@ def export(market: str, as_of: str | None = None):
                     series = -series
 
                 factor_values[factor_id] = series
-                weights[factor_id] = saved_weights.get(factor_id, max(score, 0.01))
+                fallback_w = max(score, 0.01) if score is not None else 1.0
+                weights[factor_id] = saved_weights.get(factor_id, fallback_w)
                 total_weight += weights[factor_id]
                 print(
                     f"    {name}: {len(today_values)} values computed "
