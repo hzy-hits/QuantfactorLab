@@ -22,14 +22,14 @@ GATE_THRESHOLDS: dict[str, dict[str, float]] = {
         "ic_ir_min": 0.2,
         "turnover_max": 0.50,
         "monotonicity_min": 0.0,  # Disabled: A-share factor-return relationships are non-monotonic
-        "corr_max": 0.7,
+        "corr_max": 0.6,          # Tightened from 0.7: voting strategy needs independent factors
     },
     "us": {
         "ic_min": 0.02,
         "ic_ir_min": 0.3,
         "turnover_max": 0.40,
         "monotonicity_min": 0.7,
-        "corr_max": 0.7,
+        "corr_max": 0.6,          # Tightened from 0.7: voting strategy needs independent factors
     },
 }
 

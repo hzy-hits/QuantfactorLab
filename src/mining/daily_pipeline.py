@@ -435,7 +435,7 @@ def step1_mine(market: str, max_factors: int = 500) -> list[dict]:
                     common = cand_vals.index.intersection(exist_vals.index)
                     if len(common) > 100:
                         corr = _cross_sectional_corr(cand_vals, exist_vals)
-                        if abs(corr) > 0.7:
+                        if abs(corr) > 0.6:
                             is_redundant = True
                             break
         if not is_redundant:
