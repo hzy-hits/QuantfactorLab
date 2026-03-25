@@ -31,6 +31,13 @@ echo ""
 echo "=== SigReg Factor Diagnostics ==="
 /home/ivena/miniconda3/bin/python3 scripts/sigreg_report.py || echo "SigReg report failed (non-fatal)"
 
+# Today's rolling best-factor picks
+echo ""
+echo "=== Today's Rolling Best-Factor Picks ==="
+/home/ivena/miniconda3/bin/python3 scripts/run_strategy.py --market cn --today || echo "CN picks failed (non-fatal)"
+echo ""
+/home/ivena/miniconda3/bin/python3 scripts/run_strategy.py --market us --today || echo "US picks failed (non-fatal)"
+
 echo ""
 echo "=========================================="
 echo "  Done: $(date '+%Y-%m-%d %H:%M:%S')"
