@@ -250,7 +250,9 @@ def export(market: str, as_of: str | None = None):
         factor_best_q[fid] = 5
 
     # Count votes: how many factors place each stock in their best quintile
-    votes = {}
+    # Score = cross-sectional RANK of vote count, scaled to [-1, 1]
+    # This ensures a balanced distribution of long/short signals.
+    raw_votes = {}
     for sym in all_symbols:
         count = 0
         total = 0
@@ -260,15 +262,13 @@ def export(market: str, as_of: str | None = None):
                 if quintiles[sym] == factor_best_q[fid]:
                     count += 1
         if total > 0:
-            # Score = vote fraction, scaled to [-1, 1]
-            # 0 votes → -1 (short), all votes → +1 (strong long)
-            votes[sym] = 2.0 * (count / total) - 1.0
+            raw_votes[sym] = count / total
 
-    # Also compute worst quintile votes for short signal
-    for sym in all_symbols:
-        if sym in votes:
-            continue
-        votes[sym] = -1.0  # no data = no signal
+    # Cross-sectional rank → scale to [-1, +1]
+    # Top 20% get strong positive, bottom 20% get strong negative
+    vote_series = pd.Series(raw_votes)
+    ranked = vote_series.rank(pct=True)  # 0-1 percentile
+    votes = (ranked * 2 - 1).to_dict()   # scale to [-1, +1]
 
     # 4b. Mahalanobis filter: penalize stocks that deviate from factor-space norm
     # Stocks the factor model can't explain well are less predictable.
