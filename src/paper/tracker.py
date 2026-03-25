@@ -24,13 +24,15 @@ def _open_us_db_readonly() -> duckdb.DuckDBPyConnection:
 
     DuckDB is single-writer: even read_only=True fails when another process
     holds the write lock. Copying the file bypasses this entirely.
+    Temp files are cleaned up at process exit.
     """
     try:
         return duckdb.connect(US_DB, read_only=True)
     except Exception:
-        # DB is locked — copy to temp and read from there
+        import atexit, os
         tmp = Path(tempfile.mkdtemp()) / "quant_readonly.duckdb"
         shutil.copy2(US_DB, tmp)
+        atexit.register(lambda p=str(tmp): os.unlink(p) if os.path.exists(p) else None)
         return duckdb.connect(str(tmp), read_only=True)
 
 N_PICKS = 20  # top/bottom N stocks
@@ -104,7 +106,7 @@ def record(as_of: str | None = None, n: int = N_PICKS):
         FROM analysis_daily a
         JOIN (
             SELECT DISTINCT symbol FROM prices_daily
-            WHERE date >= ? AND volume > 100000
+            WHERE date = ? AND volume > 100000
         ) p ON a.symbol = p.symbol
         WHERE a.date = ? AND a.module_name = 'lab_factor'
         ORDER BY a.trend_prob

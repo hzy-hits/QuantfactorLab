@@ -681,12 +681,11 @@ def step4_health_check(market: str):
             # Lifecycle transitions
             new_status = status
             if status == "promoted":
-                # Negative IC = factor direction flipped, treat as unhealthy
-                # Near-zero IC = no predictive power
-                is_unhealthy = rolling_ic < HEALTH_WATCH_IC  # must be positive AND above threshold
+                # Use abs(IC) for health check: short factors have negative IC by design
+                is_unhealthy = abs(rolling_ic) < HEALTH_WATCH_IC
                 if is_unhealthy:
                     new_watch = watch_count + 1
-                    reason = "negative IC" if rolling_ic < 0 else "IC too low"
+                    reason = "IC too low"
                     if new_watch >= HEALTH_WATCH_DAYS:
                         new_status = "watchlist"
                         print(f"  ⚠️ {factor_id}: promoted → watchlist (IC={rolling_ic:.4f}, {reason}, {new_watch}d)")
@@ -697,7 +696,7 @@ def step4_health_check(market: str):
                     print(f"  ✅ {factor_id}: IC={rolling_ic:.4f} healthy")
 
             elif status == "watchlist":
-                if rolling_ic >= HEALTH_RECOVER_IC:  # must be positive to recover
+                if abs(rolling_ic) >= HEALTH_RECOVER_IC:  # direction-agnostic
                     new_status = "promoted"
                     new_watch = 0
                     print(f"  🔄 {factor_id}: watchlist → promoted (IC recovered to {rolling_ic:.4f})")

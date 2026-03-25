@@ -29,9 +29,20 @@ FACTOR_LAB_DB = "/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb"
 PIPELINE_CONFIGS = {
     "cn": {
         "db_path": "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb",
-        "price_sql": "SELECT ts_code, trade_date, open, high, low, close, vol as volume, amount FROM prices WHERE close > 0 ORDER BY ts_code, trade_date",
+        "price_sql": """
+            SELECT p.ts_code, p.trade_date, p.open, p.high, p.low, p.close,
+                   p.vol as volume, p.amount,
+                   db.turnover_rate, db.pe_ttm, db.pb, db.ps_ttm,
+                   db.total_mv AS market_cap, db.circ_mv AS circ_market_cap
+            FROM prices p
+            LEFT JOIN daily_basic db
+                ON p.ts_code = db.ts_code AND p.trade_date = db.trade_date
+            WHERE p.close > 0
+            ORDER BY p.ts_code, p.trade_date
+        """,
         "sym_col": "ts_code",
         "date_col": "trade_date",
+        "universe_top_n": 2000,
         "insert_sql": "INSERT OR REPLACE INTO analytics (ts_code, as_of, module, metric, value, detail) VALUES (?, ?, 'lab_factor', ?, ?, ?)",
     },
     "us": {
@@ -137,9 +148,25 @@ def export(market: str, as_of: str | None = None):
 
     print(f"  {len(promoted)} promoted factors for {market}")
 
-    # 2. Load prices
-    pipeline_con = duckdb.connect(cfg["db_path"])
+    # 2. Load prices (with lock-safe fallback)
+    try:
+        pipeline_con = duckdb.connect(cfg["db_path"])
+    except Exception:
+        import shutil, tempfile
+        tmp = tempfile.mktemp(suffix=".duckdb")
+        shutil.copy2(cfg["db_path"], tmp)
+        pipeline_con = duckdb.connect(tmp)
     prices = pipeline_con.execute(cfg["price_sql"]).fetchdf()
+
+    # Universe filter (CN only)
+    top_n = cfg.get("universe_top_n")
+    if top_n and "market_cap" in prices.columns:
+        prices["_r"] = prices.groupby("trade_date")["market_cap"].rank(
+            ascending=False, method="first", na_option="bottom"
+        )
+        prices = prices[prices["_r"] <= top_n].drop(columns=["_r"]).reset_index(drop=True)
+        print(f"  Universe filter: top {top_n} by market_cap")
+
     effective_trade_date = _resolve_effective_trade_date(prices, as_of)
     if effective_trade_date is None:
         print(f"  No trade_date <= {as_of} in pipeline DB, skipping")

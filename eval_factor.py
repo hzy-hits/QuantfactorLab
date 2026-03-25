@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -83,13 +84,17 @@ def _cached_load(market: str, loader, name: str, max_age_hours: int = 24):
 # so DSL formulas can reference any column that exists in the pipeline DB.
 # ---------------------------------------------------------------------------
 def _open_db_readonly(db_path: str):
-    """Open DuckDB read-only, falling back to file copy if write-locked."""
+    """Open DuckDB read-only, falling back to file copy if write-locked.
+
+    Temp files are registered for cleanup at process exit via atexit.
+    """
     try:
         return duckdb.connect(db_path, read_only=True)
     except Exception:
-        import shutil, tempfile
+        import shutil, tempfile, atexit
         tmp = tempfile.mktemp(suffix=".duckdb")
         shutil.copy2(db_path, tmp)
+        atexit.register(lambda p=tmp: os.unlink(p) if os.path.exists(p) else None)
         return duckdb.connect(tmp, read_only=True)
 
 
@@ -285,7 +290,7 @@ def promote_factor(
 ) -> str:
     """Write factor to DuckDB registry as promoted. Populates IS metrics. Returns factor_id."""
     ensure_tables()
-    factor_id = hashlib.sha256(formula.encode()).hexdigest()[:16]
+    factor_id = hashlib.sha256(f"{market}:{formula}".encode()).hexdigest()[:16]
     con = duckdb.connect(FACTOR_LAB_DB)
     try:
         existing = con.execute(
@@ -514,6 +519,10 @@ def main() -> int:
         print("COMPUTE_ERROR: factor produced all NaN values", file=sys.stderr)
         return 2
 
+    # Apply direction: flip factor values for short factors
+    if args.direction == "short":
+        factor_values["factor_value"] = -factor_values["factor_value"]
+
     # 4. Walk-forward backtest
     try:
         bt = walk_forward_backtest(
@@ -528,11 +537,22 @@ def main() -> int:
 
     # 5. Check gates (with correlation against promoted factors)
     promoted_series, promoted_names = load_promoted_factor_values(args.market, prices)
+
+    # Filter to IS-only for gate checks (prevent OOS leakage)
+    oos_start = cfg["oos_start"]
+    if promoted_series:
+        is_mask = factor_values[date_col] < oos_start
+        candidate_values_is = factor_values.loc[is_mask, "factor_value"]
+        candidate_dates_is = factor_values.loc[is_mask, date_col]
+    else:
+        candidate_values_is = None
+        candidate_dates_is = None
+
     gate_result = check_gates(
         bt, args.market,
         existing_factors=promoted_series if promoted_series else None,
-        candidate_values=factor_values["factor_value"] if promoted_series else None,
-        candidate_dates=factor_values[date_col] if promoted_series else None,
+        candidate_values=candidate_values_is,
+        candidate_dates=candidate_dates_is,
     )
 
     # Update correlation gate with actual factor names
