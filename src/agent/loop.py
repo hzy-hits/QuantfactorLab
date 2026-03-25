@@ -59,7 +59,7 @@ MARKET_CONFIGS = {
         "vol_col": "vol",
         "cost_per_trade": 0.003,
         "oos_start": "2025-10-01",
-        "universe_top_n": 1000,
+        "universe_top_n": 2000,
     },
     "us": {
         "market": "us",

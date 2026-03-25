@@ -48,7 +48,7 @@ MARKET_CONFIGS = {
         "vol_col": "vol",
         "cost_per_trade": 0.003,
         "oos_start": "2025-10-01",
-        "universe_top_n": 1000,  # Rolling top N by market_cap per day
+        "universe_top_n": 2000,  # Rolling top N by market_cap per day
     },
     "us": {
         "db_path": "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb",

@@ -192,7 +192,7 @@ CONFIGS = {
         "db_path": "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb",
         "table": "prices", "sym_col": "ts_code", "date_col": "trade_date",
         "close_col": "close", "vol_col": "vol",
-        "universe_top_n": 1000,
+        "universe_top_n": 2000,
         "sql": """
             SELECT p.ts_code, p.trade_date, p.open, p.high, p.low, p.close,
                    p.vol as volume, p.amount,
