@@ -89,38 +89,74 @@ def _get_prev_trade_date(dt: str) -> str | None:
 
 
 def record(as_of: str | None = None, n: int = N_PICKS):
-    """Record today's top/bottom N picks based on composite scores.
+    """Record today's picks using rolling best-factor strategy.
 
-    Reads from analysis_daily where module_name='lab_factor'.
-    If as_of is None, uses the latest available trade date.
+    Directly calls the strategy module instead of reading from pipeline DB.
     """
     init_tables()
 
     if as_of is None:
         as_of = _get_latest_trade_date()
 
-    # Read composite scores, filtered to stocks with recent price data
-    con = _open_us_db_readonly()
-    scores = con.execute("""
-        SELECT a.symbol, a.trend_prob AS score
-        FROM analysis_daily a
-        JOIN (
-            SELECT DISTINCT symbol FROM prices_daily
-            WHERE date = ? AND volume > 100000
-        ) p ON a.symbol = p.symbol
-        WHERE a.date = ? AND a.module_name = 'lab_factor'
-        ORDER BY a.trend_prob
-    """, [as_of, as_of]).fetchdf()
-    con.close()
+    # Use rolling strategy directly
+    try:
+        import pickle
+        from src.dsl.parser import parse
+        from src.dsl.compute import compute_factor
+        from src.strategy.rolling_best import select_best_factor, StrategyConfig
+        import duckdb as _ddb
 
-    if scores.empty:
-        print(f"  No lab_factor scores for {as_of}")
+        prices = pickle.load(open("data/.cache/us_prices.pkl", "rb"))
+        sym_col, date_col = "symbol", "date"
+        prices = prices.sort_values([sym_col, date_col])
+        prices["ret_next"] = prices.groupby(sym_col)["close"].transform(lambda x: x.shift(-1) / x - 1)
+        for h in [5, 10, 20]:
+            prices[f"ret_{h}d"] = prices.groupby(sym_col)["close"].transform(lambda x: x.shift(-h) / x - 1)
+
+        con = _ddb.connect(FACTOR_LAB_DB, read_only=True)
+        promoted = con.execute("SELECT name, formula FROM factor_registry WHERE market='us' AND status='promoted'").fetchdf()
+        con.close()
+
+        all_factors = {}
+        for _, row in promoted.iterrows():
+            try:
+                ast = parse(row["formula"])
+                vals = compute_factor(ast, prices, sym_col=sym_col, date_col=date_col)
+                merged = vals.merge(prices[[sym_col, date_col, "ret_next", "ret_20d"]], on=[sym_col, date_col]).dropna(subset=["factor_value"])
+                all_factors[row["name"]] = merged
+            except Exception:
+                pass
+
+        dates = sorted(prices[date_col].unique())
+        latest = dates[-1]
+        cfg = StrategyConfig(lookback=40, hold_max=20, n_picks=n)
+        lb_dates = dates[-cfg.lookback - 1:-1]
+
+        factor_name, side, sharpe = select_best_factor(all_factors, lb_dates, cfg.hold_max, date_col, n)
+
+        if factor_name is None:
+            print(f"  No factor selected for {as_of}")
+            return
+
+        fdata = all_factors[factor_name]
+        today = fdata[fdata[date_col] == latest].dropna(subset=["factor_value"])
+        if side == "top":
+            picks = today.nlargest(n, "factor_value")
+        else:
+            picks = today.nsmallest(n, "factor_value")
+
+        bottom = picks[[sym_col, "factor_value"]].rename(columns={sym_col: "symbol", "factor_value": "score"}).reset_index(drop=True)
+        # For paper tracking, "long" = strategy picks, "short" = opposite end
+        if side == "top":
+            top = today.nsmallest(n, "factor_value")[[sym_col, "factor_value"]].rename(columns={sym_col: "symbol", "factor_value": "score"}).reset_index(drop=True)
+        else:
+            top = today.nlargest(n, "factor_value")[[sym_col, "factor_value"]].rename(columns={sym_col: "symbol", "factor_value": "score"}).reset_index(drop=True)
+
+        print(f"  Strategy: {factor_name} ({side}), lookback_sharpe={sharpe:.2f}")
+
+    except Exception as e:
+        print(f"  Rolling strategy failed ({e}), skipping")
         return
-
-    # Bottom N = "long" (Q1, low factor values — where the alpha is)
-    # Top N = "short" (for tracking only, we don't actually short)
-    bottom = scores.head(n).reset_index(drop=True)
-    top = scores.tail(n).reset_index(drop=True)
 
     # Write picks
     con = duckdb.connect(FACTOR_LAB_DB)

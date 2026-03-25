@@ -31,12 +31,15 @@ echo ""
 echo "=== SigReg Factor Diagnostics ==="
 /home/ivena/miniconda3/bin/python3 scripts/sigreg_report.py || echo "SigReg report failed (non-fatal)"
 
-# Today's rolling best-factor picks
+# ═══════════════════════════════════════════════════════
+# Trading Signals (independent from pipeline reports)
+# ═══════════════════════════════════════════════════════
 echo ""
-echo "=== Today's Rolling Best-Factor Picks ==="
-/home/ivena/miniconda3/bin/python3 scripts/run_strategy.py --market cn --today || echo "CN picks failed (non-fatal)"
+echo "=== A-Share Trading Signal (40d lookback, 20d hold) ==="
+/home/ivena/miniconda3/bin/python3 scripts/run_strategy.py --market cn --lookback 40 --hold 20 --today || echo "CN failed"
 echo ""
-/home/ivena/miniconda3/bin/python3 scripts/run_strategy.py --market us --today || echo "US picks failed (non-fatal)"
+echo "=== US Trading Signal (40d lookback, 20d hold) ==="
+/home/ivena/miniconda3/bin/python3 scripts/run_strategy.py --market us --lookback 40 --hold 20 --today || echo "US failed"
 
 echo ""
 echo "=========================================="
