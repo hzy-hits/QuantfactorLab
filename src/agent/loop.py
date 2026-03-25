@@ -560,6 +560,43 @@ class FactorSession:
         self.experiments: list[dict] = []
         self._client = None
 
+    def _load_existing_factors(self) -> list[dict]:
+        """Load promoted + recently retired factors from registry for agent context."""
+        import duckdb
+        db_path = "/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb"
+        try:
+            con = duckdb.connect(db_path, read_only=True)
+            rows = con.execute("""
+                SELECT name, formula, status, ic_7d, ic_ir_7d,
+                       promoted_at, retired_at, retire_reason
+                FROM factor_registry
+                WHERE market = ?
+                  AND status IN ('promoted', 'watchlist', 'retired')
+                ORDER BY status, promoted_at DESC
+            """, [self.market]).fetchall()
+            con.close()
+        except Exception:
+            return []
+
+        factors = []
+        for name, formula, status, ic, ic_ir, promoted_at, retired_at, retire_reason in rows:
+            entry = {
+                "name": name or "unnamed",
+                "formula": formula,
+                "is_ic": ic or 0,
+                "status": status,
+            }
+            if status == "promoted":
+                entry["note"] = f"IC_IR={ic_ir:.3f}" if ic_ir else ""
+            elif status == "retired":
+                entry["note"] = f"retired: {retire_reason or 'unknown'}"
+            elif status == "watchlist":
+                entry["note"] = "degrading — on watchlist"
+            factors.append(entry)
+
+        logger.info(f"Loaded {len(factors)} existing factors ({sum(1 for f in factors if f['status']=='promoted')} promoted)")
+        return factors
+
     def run(self) -> SessionResult:
         """Run full session: budget experiments, then OOS check top 3."""
         print(f"=== Factor Lab Session: {self.market.upper()} ===")
@@ -581,11 +618,14 @@ class FactorSession:
         print(f"  {len(features)} feature rows")
         print()
 
+        # Load existing promoted factors so agent avoids rediscovery
+        existing_factors = self._load_existing_factors()
+
         # Build system prompt
         system_prompt = build_system_prompt(
             market=self.market,
             regime_dist=None,  # TODO: compute from data
-            existing_factors=None,  # TODO: load from registry
+            existing_factors=existing_factors,
         )
 
         # Main experiment loop

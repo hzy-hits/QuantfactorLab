@@ -94,9 +94,20 @@ def build_system_prompt(
 
     existing_section = ""
     if existing_factors:
-        existing_section = "\n## Existing Promoted Factors (avoid high correlation)\n"
-        for f in existing_factors:
-            existing_section += f"- {f.get('name', 'unnamed')}: `{f.get('formula', '?')}` (IC={f.get('is_ic', '?')})\n"
+        promoted = [f for f in existing_factors if f.get("status") == "promoted"]
+        retired = [f for f in existing_factors if f.get("status") in ("retired", "watchlist")]
+
+        if promoted:
+            existing_section += "\n## Currently Promoted Factors (avoid correlation > 0.6)\n"
+            for f in promoted:
+                note = f.get("note", "")
+                existing_section += f"- {f['name']}: `{f['formula']}` (IC={f['is_ic']:.3f} {note})\n"
+
+        if retired:
+            existing_section += "\n## Recently Retired/Watchlist Factors (learn from their failure)\n"
+            for f in retired:
+                note = f.get("note", "")
+                existing_section += f"- {f['name']}: `{f['formula']}` — {note}\n"
 
     return f"""\
 You are a quantitative researcher mining alpha factors for {market_label}.
