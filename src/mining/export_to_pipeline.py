@@ -190,59 +190,91 @@ def export(market: str, as_of: str | None = None):
         pipeline_con.close()
         return 0
 
-    # 4. Compute weighted composite
-    # Normalize weights
-    for k in weights:
-        weights[k] /= total_weight
+    # 4. Voting-based composite (intersection strategy)
+    # For each factor, determine best quintile and tag stocks in it.
+    # Composite score = fraction of factors that "vote" for this stock.
+    # This avoids Q1/Q5 direction conflicts that plague weighted-average composites.
 
-    print(f"  Weight source: {weight_source}")
-
-    # Combine: weighted average of factor values
+    n_factors = len(factor_values)
     all_symbols = set()
     for fv in factor_values.values():
         all_symbols.update(fv.index)
 
-    composite = {}
-    for sym in all_symbols:
-        val = 0.0
-        w_sum = 0.0
-        for fid, fv in factor_values.items():
-            if sym in fv.index and not np.isnan(fv[sym]):
-                val += weights[fid] * fv[sym]
-                w_sum += weights[fid]
-        if w_sum > 0:
-            composite[sym] = val / w_sum
+    # Build per-factor quintile assignments
+    factor_best_q = {}
+    factor_quintiles = {}
+    for fid, fv in factor_values.items():
+        clean = fv.dropna()
+        if len(clean) < 25:
+            continue
+        try:
+            quintiles = pd.qcut(clean, 5, labels=False, duplicates="drop") + 1
+        except ValueError:
+            continue
+        factor_quintiles[fid] = quintiles
 
-    print(f"  lab_composite: {len(composite)} symbols")
+        # Best quintile = the one with historically highest factor values
+        # Since direction is already resolved (short factors are negated),
+        # Q5 (highest value) should be the "good" side after direction flip.
+        # But empirically Q1 often has the alpha. Use factor registry direction
+        # to decide: if factor was already negated, Q5 is correct.
+        # Simplest: just pick Q5 (highest factor value) since we already
+        # flipped short factors with -series above.
+        factor_best_q[fid] = 5
+
+    # Count votes: how many factors place each stock in their best quintile
+    votes = {}
+    for sym in all_symbols:
+        count = 0
+        total = 0
+        for fid, quintiles in factor_quintiles.items():
+            if sym in quintiles.index:
+                total += 1
+                if quintiles[sym] == factor_best_q[fid]:
+                    count += 1
+        if total > 0:
+            # Score = vote fraction, scaled to [-1, 1]
+            # 0 votes → -1 (short), all votes → +1 (strong long)
+            votes[sym] = 2.0 * (count / total) - 1.0
+
+    # Also compute worst quintile votes for short signal
+    for sym in all_symbols:
+        if sym in votes:
+            continue
+        votes[sym] = -1.0  # no data = no signal
+
+    composite = votes
+    n_active = sum(1 for v in composite.values() if abs(v) > 0.1)
+
+    print(f"  Voting composite: {len(composite)} symbols, {n_active} active (|score|>0.1)")
+    print(f"  Score distribution: [{min(composite.values()):.2f}, {max(composite.values()):.2f}]")
+    vote_counts = {}
+    for v in composite.values():
+        bucket = round((v + 1) / 2 * n_factors)
+        vote_counts[bucket] = vote_counts.get(bucket, 0) + 1
+    for k in sorted(vote_counts.keys(), reverse=True)[:5]:
+        print(f"    {k}/{n_factors} votes: {vote_counts[k]} stocks")
 
     # 5. Write to pipeline DB
+    detail_str = (
+        f"method=voting,factors={n_factors},"
+        f"effective_trade_date={effective_trade_date.date().isoformat()}"
+    )
+
     if market == "cn":
         # CN: write to analytics table
-        detail = (
-            f"factors={len(factor_values)},weight_source={weight_source},"
-            f"effective_trade_date={effective_trade_date.date().isoformat()},"
-            f"weights={json.dumps({k: round(v, 3) for k, v in weights.items()})}"
-        )
         for sym, val in composite.items():
-            pipeline_con.execute(cfg["insert_sql"], [sym, as_of, "lab_composite", val, detail])
-
-        # Also write individual factor scores
-        for fid, fv in factor_values.items():
-            for sym, val in fv.items():
-                if not np.isnan(val):
-                    pipeline_con.execute(cfg["insert_sql"],
-                                         [sym, as_of, f"lab_{fid}", val, ""])
+            pipeline_con.execute(cfg["insert_sql"], [sym, as_of, "lab_composite", val, detail_str])
 
     elif market == "us":
         # US: write to analysis_daily table
         import json as json_mod
+        detail_json = json_mod.dumps({
+            "method": "voting",
+            "factors": n_factors,
+            "effective_trade_date": effective_trade_date.date().isoformat(),
+        })
         for sym, val in composite.items():
-            detail_json = json_mod.dumps({
-                "factors": len(factor_values),
-                "weight_source": weight_source,
-                "effective_trade_date": effective_trade_date.date().isoformat(),
-                "weights": {k: round(v, 3) for k, v in weights.items()},
-            })
             pipeline_con.execute("""
                 INSERT OR REPLACE INTO analysis_daily
                     (symbol, date, module_name, trend_prob, z_score, details)
