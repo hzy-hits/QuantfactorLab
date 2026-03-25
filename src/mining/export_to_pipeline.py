@@ -243,6 +243,38 @@ def export(market: str, as_of: str | None = None):
             continue
         votes[sym] = -1.0  # no data = no signal
 
+    # 4b. Mahalanobis filter: penalize stocks that deviate from factor-space norm
+    # Stocks the factor model can't explain well are less predictable.
+    # Compute PCA on factor matrix, then Mahalanobis distance per stock.
+    try:
+        # Build factor matrix for common symbols
+        common_syms = sorted(set.intersection(*[set(fv.index) for fv in factor_values.values()]))
+        if len(common_syms) >= 100:
+            mat = np.column_stack([factor_values[fid].loc[common_syms].values for fid in factor_quintiles])
+            mask = ~np.any(np.isnan(mat), axis=1)
+            clean_syms = [common_syms[i] for i in range(len(common_syms)) if mask[i]]
+            mat_clean = mat[mask]
+
+            if len(mat_clean) >= 100:
+                mat_std = (mat_clean - mat_clean.mean(axis=0)) / (mat_clean.std(axis=0) + 1e-12)
+                U, S, Vt = np.linalg.svd(mat_std, full_matrices=False)
+                pc_scores = U * S
+                eigenvalues = S ** 2 / len(mat_std)
+                weighted = pc_scores / (np.sqrt(eigenvalues) + 1e-6)
+                mahal = np.sqrt(np.sum(weighted ** 2, axis=1))
+
+                # Penalize top 20% outliers: multiply their vote score by 0.5
+                mahal_threshold = np.percentile(mahal, 80)
+                outlier_set = {clean_syms[i] for i in range(len(clean_syms)) if mahal[i] > mahal_threshold}
+                n_penalized = 0
+                for sym in outlier_set:
+                    if sym in votes:
+                        votes[sym] *= 0.5
+                        n_penalized += 1
+                print(f"  Mahalanobis filter: penalized {n_penalized} outlier stocks (top 20% deviation)")
+    except Exception as e:
+        print(f"  Mahalanobis filter skipped: {e}")
+
     composite = votes
     n_active = sum(1 for v in composite.values() if abs(v) > 0.1)
 

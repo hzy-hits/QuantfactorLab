@@ -26,6 +26,11 @@ echo ""
 echo "=== US Factors ==="
 /home/ivena/miniconda3/bin/python3 -m src.mining.daily_pipeline --market us --max-factors 500
 
+# SigReg diagnostics
+echo ""
+echo "=== SigReg Factor Diagnostics ==="
+/home/ivena/miniconda3/bin/python3 scripts/sigreg_report.py || echo "SigReg report failed (non-fatal)"
+
 echo ""
 echo "=========================================="
 echo "  Done: $(date '+%Y-%m-%d %H:%M:%S')"

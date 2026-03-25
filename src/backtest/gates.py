@@ -157,6 +157,24 @@ def check_gates(
             "most_correlated": None,
         }
 
+    # Gate 6: Multi-collinearity (SigReg-inspired)
+    # Pairwise correlation misses cases where a factor is a linear combination
+    # of 2+ existing factors. Check R² from regressing new on all existing.
+    if existing_factors and candidate_values is not None and len(existing_factors) >= 3:
+        try:
+            from src.evaluate.sigreg import multi_collinearity_check
+            existing_dict = {f"f_{i}": ef for i, ef in enumerate(existing_factors)}
+            mc_result = multi_collinearity_check(candidate_values, existing_dict, threshold=0.85)
+            details["multi_collinearity"] = {
+                "passed": not mc_result["is_redundant"],
+                "value": mc_result["r_squared"],
+                "threshold": 0.85,
+            }
+        except Exception:
+            details["multi_collinearity"] = {"passed": True, "value": 0.0, "threshold": 0.85}
+    else:
+        details["multi_collinearity"] = {"passed": True, "value": 0.0, "threshold": 0.85}
+
     all_passed = all(g["passed"] for g in details.values())
 
     return GateResult(passed=all_passed, details=details)
