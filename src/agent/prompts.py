@@ -45,6 +45,38 @@ Infix: + - * /    Unary: -
 # Volume: volume, amount (CN only)
 # CN-only: turnover_rate, pe_ttm, pb, ps_ttm, market_cap, circ_market_cap
 # US-only: (price + volume only — no fundamentals in real-time)
+
+## IMPORTANT: What we know works and what doesn't
+
+### Verified facts:
+- Single-factor strategies outperform multi-factor composites
+- amount_stability_20 is the most promising factor (OOS Sharpe 2.14, p=0.12)
+- range_vol_20 looked great in-sample but FAILED out-of-sample (Sharpe -1.53)
+- Voting/IC-weighted composites destroy signal
+- 10-20 day holding periods match factor prediction horizon
+- Factors predicting 1-day returns have NO alpha in A-shares
+
+### Critical anti-overfit rules:
+- ALL backtests use look-ahead-safe lookback (shifted back by hold period)
+- Results must pass shuffle test (p<0.05) to be considered real
+- Train/test split: first half trains, second half tests. Never mix.
+
+### What to search for (beyond factor formulas):
+1. FACTOR HEALTH THRESHOLDS: When should a factor be retired?
+   Current: IC < 0.005 for 5 days → watchlist → 5 more days → retire
+   Search: What IC threshold? What lookback window? Rolling vs fixed?
+
+2. FACTOR ROTATION RULES: When to switch from one factor to another?
+   Current: every 20 days, pick factor with best lookback Sharpe
+   Search: What triggers a switch? IC decay? Regime change? Calendar?
+
+3. HOLDING PERIOD: How long to hold positions?
+   Current: fixed 20 days
+   Search: Should it adapt to volatility regime? Factor IC persistence?
+
+4. POSITION SIZING: How to weight picks?
+   Current: rank-based (top pick 18%, bottom 2%)
+   Search: Equal weight? Inverse vol? Kelly criterion?
 """
 
 # ---------------------------------------------------------------------------
