@@ -202,14 +202,17 @@ def show_today(market: str, cfg: StrategyConfig):
         print(f"  ⚠️ 因子健康度过低, 建议观望不操作")
         return
 
-    weight = round(100 / cfg.n_picks, 1)
-    print(f"  操作: 等权买入以下 {cfg.n_picks} 只, 每只 {weight}% 仓位")
+    # Factor-weighted: higher |factor_value| = higher conviction = higher weight
+    fv_abs = picks["factor_value"].abs()
+    weights = fv_abs / fv_abs.sum() * 100  # percentage weights
+
+    print(f"  操作: 因子加权买入以下 {cfg.n_picks} 只")
     print(f"  持有: {cfg.hold_max} 个交易日后平仓 (或止损触发时提前平)")
     print()
     print(f"  {'代码':<12s} {'买入价':>8s} {'止损':>8s} {'止盈':>8s} {'仓位':>6s}")
     print(f"  {'─'*46}")
 
-    for _, row in picks.iterrows():
+    for idx, (_, row) in enumerate(picks.iterrows()):
         sym = row[sym_col]
         if sym not in today_prices.index:
             continue
@@ -224,7 +227,8 @@ def show_today(market: str, cfg: StrategyConfig):
         if market == "cn":
             stop = max(stop, round(close * 0.90, 2))
 
-        print(f"  {sym:<12s} {close:>8.2f} {stop:>8.2f} {target:>8.2f} {weight:>5.1f}%")
+        w = round(float(weights.iloc[idx]), 1)
+        print(f"  {sym:<12s} {close:>8.2f} {stop:>8.2f} {target:>8.2f} {w:>5.1f}%")
 
 
 def main():
@@ -232,7 +236,7 @@ def main():
     parser.add_argument("--market", choices=["cn", "us"], required=True)
     parser.add_argument("--lookback", type=int, default=40)
     parser.add_argument("--hold", type=int, default=20)
-    parser.add_argument("--n-picks", type=int, default=20)
+    parser.add_argument("--n-picks", type=int, default=10)
     parser.add_argument("--ic-exit", type=float, default=-0.02)
     parser.add_argument("--today", action="store_true", help="Show today's picks")
     args = parser.parse_args()
