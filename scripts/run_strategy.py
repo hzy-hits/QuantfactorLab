@@ -202,10 +202,12 @@ def show_today(market: str, cfg: StrategyConfig):
         print(f"  ⚠️ 因子健康度过低, 建议观望不操作")
         return
 
-    # Position sizing: inverse volatility × factor conviction
-    # 1. Inverse ATR/price (risk parity: equal RISK per stock, not equal CAPITAL)
-    # 2. Factor rank score (top pick gets ~2x weight of bottom pick)
+    # Position sizing: rank-based (top pick 2x weight of bottom pick)
+    # Rank 1 (strongest signal) gets weight proportional to N
+    # Rank N (weakest signal) gets weight proportional to 1
+    # This creates meaningful differentiation without volatility distortion
     sizing_data = []
+    n_valid = 0
     for rank_i, (_, row) in enumerate(picks.iterrows()):
         sym = row[sym_col]
         if sym not in today_prices.index:
@@ -215,19 +217,16 @@ def show_today(market: str, cfg: StrategyConfig):
         if pd.isna(atr) or atr <= 0:
             atr = close * 0.03
 
-        atr_pct = atr / close  # ATR as % of price
-        inv_vol = 1.0 / (atr_pct + 0.001)  # inverse volatility
-        conviction = 1.0 + 0.5 * (cfg.n_picks - rank_i) / cfg.n_picks  # 1.0 ~ 1.5
-
         stop = round(close - 2 * atr, 2)
         target = round(close + 3 * atr, 2)
         if market == "cn":
             stop = max(stop, round(close * 0.90, 2))
 
+        rank_weight = cfg.n_picks - rank_i  # top pick = N, bottom = 1
         sizing_data.append({
             "sym": sym, "close": close, "stop": stop, "target": target,
-            "atr": atr, "atr_pct": atr_pct,
-            "raw_weight": inv_vol * conviction,
+            "atr_pct": atr / close,
+            "raw_weight": rank_weight,
         })
 
     if not sizing_data:
@@ -238,15 +237,15 @@ def show_today(market: str, cfg: StrategyConfig):
     for d in sizing_data:
         d["weight"] = d["raw_weight"] / total_w * 100
 
-    print(f"  操作: 风险平价加权买入以下 {len(sizing_data)} 只")
-    print(f"  加权: 低波动 → 大仓位, 高波动 → 小仓位, 强信号 → 加码")
+    print(f"  操作: 信号强度加权买入以下 {len(sizing_data)} 只")
+    print(f"  加权: #1 信号最强 → {sizing_data[0]['weight']:.0f}%, #10 最弱 → {sizing_data[-1]['weight']:.0f}%")
     print(f"  持有: {cfg.hold_max} 个交易日后平仓 (或止损触发时提前平)")
     print()
-    print(f"  {'代码':<12s} {'买入价':>8s} {'止损':>8s} {'止盈':>8s} {'波动':>6s} {'仓位':>6s}")
-    print(f"  {'─'*52}")
+    print(f"  {'#':>3s} {'代码':<12s} {'买入价':>8s} {'止损':>8s} {'止盈':>8s} {'仓位':>6s}")
+    print(f"  {'─'*46}")
 
-    for d in sizing_data:
-        print(f"  {d['sym']:<12s} {d['close']:>8.2f} {d['stop']:>8.2f} {d['target']:>8.2f} {d['atr_pct']*100:>5.1f}% {d['weight']:>5.1f}%")
+    for i, d in enumerate(sizing_data):
+        print(f"  {i+1:>3d} {d['sym']:<12s} {d['close']:>8.2f} {d['stop']:>8.2f} {d['target']:>8.2f} {d['weight']:>5.1f}%")
 
 
 def main():
