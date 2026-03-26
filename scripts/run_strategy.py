@@ -193,22 +193,54 @@ def show_today(market: str, cfg: StrategyConfig):
     health = ic_health_test(ics) if ics else {"health_score": 0.5, "ic_mean_recent": 0}
     health_icon = "🟢" if health["health_score"] >= 0.7 else "🟡" if health["health_score"] >= 0.4 else "🔴"
 
+    # Load stock names for CN
+    name_map = {}
+    if market == "cn":
+        try:
+            import duckdb as _ddb2
+            _con = _ddb2.connect("/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb", read_only=True)
+            _names = _con.execute("SELECT ts_code, name FROM stock_basic").fetchdf()
+            name_map = dict(zip(_names["ts_code"], _names["name"]))
+            _con.close()
+        except Exception:
+            pass
+
     label = "A股" if market == "cn" else "美股"
-    print(f"\n{'═'*60}")
-    print(f"  {label} 交易指令 — {latest.date()}")
-    print(f"  因子: {factor_name} | 持仓: {cfg.hold_max}天 | 健康: {health_icon} {health['health_score']}")
-    print(f"{'═'*60}")
+
+    # Compute hold end date
+    hold_end_idx = min(len(dates) - 1, len(dates) - 1)  # latest + hold_max
+    import datetime as _dt
+    entry_date = latest.date() if hasattr(latest, 'date') else latest
+    exit_date = entry_date + _dt.timedelta(days=int(cfg.hold_max * 1.5))  # approximate
+
+    print(f"\n{'═'*70}")
+    print(f"  {label} 交易指令 — {entry_date}")
+    print(f"{'═'*70}")
+    print(f"  因子: {factor_name}")
+    print(f"  健康: {health_icon} {health['health_score']}")
+    print()
 
     if health["health_score"] < 0.4:
         print(f"  ⚠️ 因子健康度过低, 建议观望不操作")
+        print(f"{'═'*70}")
         return
 
-    # Position sizing: rank-based (top pick 2x weight of bottom pick)
-    # Rank 1 (strongest signal) gets weight proportional to N
-    # Rank N (weakest signal) gets weight proportional to 1
-    # This creates meaningful differentiation without volatility distortion
+    print(f"  ┌─────────────────────────────────────────────────┐")
+    print(f"  │                   使 用 指 南                    │")
+    print(f"  ├─────────────────────────────────────────────────┤")
+    print(f"  │ 建仓时机: 收到报告后下一个交易日开盘价附近买入  │")
+    print(f"  │ 持仓周期: {cfg.hold_max} 个交易日 (预计平仓日: ~{exit_date})     │")
+    print(f"  │ 止损规则: 收盘价跌破止损价 → 次日开盘卖出       │")
+    print(f"  │ 止盈规则: 收盘价涨过止盈价 → 次日开盘卖出       │")
+    print(f"  │ 到期规则: 持满 {cfg.hold_max} 天后全部平仓, 等待新指令     │")
+    if market == "cn":
+        print(f"  │ T+1 注意: 买入当天不能卖, 最早次日可卖出       │")
+    print(f"  │ 健康监控: 如因子健康度降至 🔴, 提前全部平仓      │")
+    print(f"  └─────────────────────────────────────────────────┘")
+    print()
+
+    # Position sizing
     sizing_data = []
-    n_valid = 0
     for rank_i, (_, row) in enumerate(picks.iterrows()):
         sym = row[sym_col]
         if sym not in today_prices.index:
@@ -223,9 +255,11 @@ def show_today(market: str, cfg: StrategyConfig):
         if market == "cn":
             stop = max(stop, round(close * 0.90, 2))
 
-        rank_weight = cfg.n_picks - rank_i  # top pick = N, bottom = 1
+        stock_name = name_map.get(sym, sym)
+        rank_weight = cfg.n_picks - rank_i
         sizing_data.append({
-            "sym": sym, "close": close, "stop": stop, "target": target,
+            "sym": sym, "name": stock_name,
+            "close": close, "stop": stop, "target": target,
             "atr_pct": atr / close,
             "raw_weight": rank_weight,
         })
@@ -238,15 +272,14 @@ def show_today(market: str, cfg: StrategyConfig):
     for d in sizing_data:
         d["weight"] = d["raw_weight"] / total_w * 100
 
-    print(f"  操作: 信号强度加权买入以下 {len(sizing_data)} 只")
-    print(f"  加权: #1 信号最强 → {sizing_data[0]['weight']:.0f}%, #10 最弱 → {sizing_data[-1]['weight']:.0f}%")
-    print(f"  持有: {cfg.hold_max} 个交易日后平仓 (或止损触发时提前平)")
-    print()
-    print(f"  {'#':>3s} {'代码':<12s} {'买入价':>8s} {'止损':>8s} {'止盈':>8s} {'仓位':>6s}")
-    print(f"  {'─'*46}")
+    print(f"  {'#':>3s} {'代码':<12s} {'名称':<10s} {'买入价':>8s} {'止损':>8s} {'止盈':>8s} {'仓位':>6s}")
+    print(f"  {'─'*62}")
 
     for i, d in enumerate(sizing_data):
-        print(f"  {i+1:>3d} {d['sym']:<12s} {d['close']:>8.2f} {d['stop']:>8.2f} {d['target']:>8.2f} {d['weight']:>5.1f}%")
+        name_display = d["name"][:8]  # truncate long names
+        print(f"  {i+1:>3d} {d['sym']:<12s} {name_display:<10s} {d['close']:>8.2f} {d['stop']:>8.2f} {d['target']:>8.2f} {d['weight']:>5.1f}%")
+
+    print(f"\n  信号强度: #1 最强 → {sizing_data[0]['weight']:.0f}% 仓位, #{len(sizing_data)} 最弱 → {sizing_data[-1]['weight']:.0f}% 仓位")
 
 
 def main():
