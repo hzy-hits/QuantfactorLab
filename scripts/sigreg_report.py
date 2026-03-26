@@ -103,27 +103,17 @@ def run_diagnostics(market: str):
     else:
         print(f"  🟢 No redundant factors (all R²<0.85)")
 
-    # 3. IC Health
-    unhealthy = []
-    regime_changes = []
+    # 3. Signal Analysis (Wavelet + FFT + Phase Space)
+    from src.evaluate.signal_analysis import full_diagnosis
+
+    print(f"\n  --- Signal Analysis (小波/FFT/相空间) ---")
     for name, ics in factor_ic_series.items():
-        h = ic_health_test(ics)
-        if h["health_score"] < 0.5:
-            unhealthy.append((name, h))
-        if h.get("regime_change_detected"):
-            regime_changes.append((name, h))
-
-    if unhealthy:
-        print(f"  🔴 Unhealthy factors ({len(unhealthy)}):")
-        for name, h in unhealthy:
-            print(f"     {name}: health={h['health_score']} IC_recent={h['ic_mean_recent']:+.3f}")
-    else:
-        print(f"  🟢 All factors healthy")
-
-    if regime_changes:
-        print(f"  ⚠️ Regime changes ({len(regime_changes)}):")
-        for name, h in regime_changes:
-            print(f"     {name}: drift_z={h['drift_z']:.1f}")
+        if len(ics) < 80:
+            continue
+        diag = full_diagnosis(np.array(ics))
+        action_icon = {"EXIT": "🔴", "REDUCE": "🟡", "HOLD": "🟢"}.get(diag["action"], "⚪")
+        print(f"  {action_icon} {name}: {diag['action']} — {diag['reason']}")
+        print(f"       IC半衰期={diag['ic_halflife']}天, 主周期={diag['dominant_period']:.0f}天, 相维度={diag['phase_dimension']:.1f}, 建议持仓={diag['suggested_hold_days']}天")
 
 
 def main():
