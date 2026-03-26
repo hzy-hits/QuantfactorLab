@@ -20,10 +20,12 @@ from dataclasses import dataclass
 class StrategyConfig:
     lookback: int = 40        # days to look back for factor selection
     hold_max: int = 20        # max holding period (days)
+    hold_min: int = 3         # min holding period (avoid T+1 churn)
     rebalance: int = 20       # rebalance frequency (= hold_max for non-overlapping)
-    n_picks: int = 20         # stocks to hold
+    n_picks: int = 10         # stocks to hold
     ic_exit_window: int = 10  # rolling window for IC health check
     ic_exit_threshold: float = -0.02  # IC below this → exit early
+    adaptive_hold: bool = True  # if True, exit early when IC degrades
 
 
 @dataclass
@@ -155,8 +157,10 @@ def backtest(
         # Check if we need to rebalance or exit
         need_rebalance = position is None or position.days_held >= cfg.hold_max
 
-        # SigReg IC health check for early exit
-        if position is not None and not need_rebalance:
+        # Adaptive hold: IC-based early exit (only after hold_min days)
+        if (cfg.adaptive_hold and position is not None
+                and not need_rebalance
+                and position.days_held >= cfg.hold_min):
             recent = dates[max(0, i - cfg.ic_exit_window) : i]
             fdata = all_factors.get(position.factor_name)
             if fdata is not None:

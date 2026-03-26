@@ -28,12 +28,23 @@ if [ "$HOUR" -ge 9 ] && [ "$HOUR" -lt 13 ]; then
     echo "  Mode: Strategy Optimization"
     echo ""
 
-    # Run strategy backtest grid search with different params
-    echo "=== Strategy Grid Search ==="
+    # Grid search: lookback × hold × n_picks × ic_exit
+    echo "=== CN Strategy Grid Search ==="
     for LOOKBACK in 20 40 60; do
         for HOLD in 5 10 20; do
-            echo "--- lookback=$LOOKBACK hold=$HOLD ---"
-            $PYTHON scripts/run_strategy.py --market cn --lookback $LOOKBACK --hold $HOLD 2>&1 | grep -E "Ann Return|Sharpe|Max DD|Excess" || true
+            for NPICKS in 5 10 15; do
+                echo "--- lb=$LOOKBACK hold=$HOLD n=$NPICKS ---"
+                $PYTHON scripts/run_strategy.py --market cn --lookback $LOOKBACK --hold $HOLD --n-picks $NPICKS 2>&1 | grep -E "Ann Return|Sharpe|Max DD|Excess" || true
+            done
+        done
+    done
+
+    echo ""
+    echo "=== US Strategy Grid Search ==="
+    for LOOKBACK in 20 40 60; do
+        for HOLD in 10 20; do
+            echo "--- lb=$LOOKBACK hold=$HOLD ---"
+            $PYTHON scripts/run_strategy.py --market us --lookback $LOOKBACK --hold $HOLD 2>&1 | grep -E "Ann Return|Sharpe|Max DD|Excess" || true
         done
     done
 
