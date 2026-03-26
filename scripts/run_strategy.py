@@ -140,7 +140,7 @@ def run_backtest(market: str, cfg: StrategyConfig):
 
 
 def show_today(market: str, cfg: StrategyConfig):
-    """Show today's recommended picks."""
+    """Output actionable trading instructions."""
     prices, all_factors, sym_col, date_col = load_data(market)
     dates = sorted(prices[date_col].unique())
     latest = dates[-1]
@@ -151,7 +151,7 @@ def show_today(market: str, cfg: StrategyConfig):
     )
 
     if factor_name is None:
-        print("No factor selected")
+        print("No factor selected — stay cash")
         return
 
     fdata = all_factors[factor_name]
@@ -162,23 +162,69 @@ def show_today(market: str, cfg: StrategyConfig):
     else:
         picks = today.nsmallest(cfg.n_picks, "factor_value")
 
-    # Get prices for ATR
-    pick_syms = picks[sym_col].tolist()
     today_prices = prices[prices[date_col] == latest].set_index(sym_col)
 
-    print(f"\n{'='*60}")
-    print(f"  {market.upper()} Today's Picks ({latest.date()})")
-    print(f"  Factor: {factor_name} ({side} {cfg.n_picks})")
-    print(f"  Lookback Sharpe: {sharpe:.2f}")
-    print(f"  Hold: up to {cfg.hold_max} days")
-    print(f"{'='*60}")
-    print(f"  {'Symbol':<12s} {'Close':>8s} {'Score':>8s}")
-    print(f"  {'-'*30}")
+    # Compute ATR for stop/target
+    prices_sorted = prices.sort_values([sym_col, date_col])
+    prices_sorted["tr"] = np.maximum(
+        prices_sorted["high"] - prices_sorted["low"],
+        np.maximum(
+            abs(prices_sorted["high"] - prices_sorted.groupby(sym_col)["close"].shift(1)),
+            abs(prices_sorted["low"] - prices_sorted.groupby(sym_col)["close"].shift(1)),
+        ),
+    )
+    atr_14 = prices_sorted.groupby(sym_col)["tr"].transform(
+        lambda s: s.rolling(14, min_periods=5).mean()
+    )
+    prices_sorted["atr"] = atr_14
+    atr_today = prices_sorted[prices_sorted[date_col] == latest].set_index(sym_col)["atr"]
+
+    # SigReg IC health check
+    from src.evaluate.sigreg import ic_health_test
+    from scipy.stats import spearmanr as _sp
+    ics = []
+    for dt in lb_dates[-20:]:
+        day = fdata[fdata[date_col] == dt].dropna(subset=["factor_value", "ret_next"])
+        if len(day) >= 30:
+            rho, _ = _sp(day["factor_value"], day["ret_next"])
+            if not np.isnan(rho):
+                ics.append(rho)
+    health = ic_health_test(ics) if ics else {"health_score": 0.5, "ic_mean_recent": 0}
+    health_icon = "🟢" if health["health_score"] >= 0.7 else "🟡" if health["health_score"] >= 0.4 else "🔴"
+
+    label = "A股" if market == "cn" else "美股"
+    print(f"\n{'═'*60}")
+    print(f"  {label} 交易指令 — {latest.date()}")
+    print(f"  因子: {factor_name} | 持仓: {cfg.hold_max}天 | 健康: {health_icon} {health['health_score']}")
+    print(f"{'═'*60}")
+
+    if health["health_score"] < 0.4:
+        print(f"  ⚠️ 因子健康度过低, 建议观望不操作")
+        return
+
+    weight = round(100 / cfg.n_picks, 1)
+    print(f"  操作: 等权买入以下 {cfg.n_picks} 只, 每只 {weight}% 仓位")
+    print(f"  持有: {cfg.hold_max} 个交易日后平仓 (或止损触发时提前平)")
+    print()
+    print(f"  {'代码':<12s} {'买入价':>8s} {'止损':>8s} {'止盈':>8s} {'仓位':>6s}")
+    print(f"  {'─'*46}")
 
     for _, row in picks.iterrows():
         sym = row[sym_col]
-        close = today_prices.loc[sym, "close"] if sym in today_prices.index else 0
-        print(f"  {sym:<12s} {close:>8.2f} {row['factor_value']:>8.3f}")
+        if sym not in today_prices.index:
+            continue
+        close = today_prices.loc[sym, "close"]
+        atr = atr_today.loc[sym] if sym in atr_today.index else close * 0.03
+        if pd.isna(atr) or atr <= 0:
+            atr = close * 0.03
+
+        stop = round(close - 2 * atr, 2)
+        target = round(close + 3 * atr, 2)
+
+        if market == "cn":
+            stop = max(stop, round(close * 0.90, 2))
+
+        print(f"  {sym:<12s} {close:>8.2f} {stop:>8.2f} {target:>8.2f} {weight:>5.1f}%")
 
 
 def main():
