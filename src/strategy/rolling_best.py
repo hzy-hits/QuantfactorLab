@@ -148,7 +148,7 @@ def backtest(
     results = []
     position: Position | None = None
 
-    i = cfg.lookback
+    i = cfg.lookback + cfg.hold_max  # need extra hold_max for no-leakage lookback
     while i < len(dates) - 1:
         dt = dates[i]
 
@@ -167,8 +167,12 @@ def backtest(
                     need_rebalance = True
 
         if need_rebalance:
-            # Select best factor
-            lb_dates = dates[i - cfg.lookback : i]
+            # Select best factor using FULLY REALIZED returns only.
+            # ret_{hold}d on day T needs price at T+hold, so to avoid
+            # look-ahead we shift the lookback window back by hold_max days.
+            lb_start = max(0, i - cfg.lookback - cfg.hold_max)
+            lb_end = max(0, i - cfg.hold_max)
+            lb_dates = dates[lb_start:lb_end]
             factor_name, side, _ = select_best_factor(
                 all_factors, lb_dates, cfg.hold_max, date_col, cfg.n_picks
             )

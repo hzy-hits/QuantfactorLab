@@ -144,7 +144,8 @@ def show_today(market: str, cfg: StrategyConfig):
     prices, all_factors, sym_col, date_col = load_data(market)
     dates = sorted(prices[date_col].unique())
     latest = dates[-1]
-    lb_dates = dates[-cfg.lookback - 1 : -1]
+    # Shift lookback back by hold_max to avoid using unrealized future returns
+    lb_dates = dates[-(cfg.lookback + cfg.hold_max) - 1 : -cfg.hold_max - 1]
 
     factor_name, side, sharpe = select_best_factor(
         all_factors, lb_dates, cfg.hold_max, date_col, cfg.n_picks
