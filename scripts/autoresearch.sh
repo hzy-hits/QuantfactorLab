@@ -1,10 +1,13 @@
 #!/bin/bash
-# Autoresearch: AI-driven factor mining via Claude agent loop.
-# Runs nightly Mon-Fri 22:00-02:00 CST (4 hours).
-# CN 2 hours (~150 experiments), US 2 hours (~150 experiments).
+# Autoresearch: AI-driven factor mining + strategy optimization.
 #
-# Cron: Mon-Fri 22:00 CST
-#   0 22 * * 1-5 cd /home/ivena/coding/python/factor-lab && bash scripts/autoresearch.sh >> logs/autoresearch.log 2>&1
+# Three daily sessions:
+#   02:00-04:00 CST — factor mining (new factors)
+#   10:00-12:00 CST — strategy optimization (hyperparameters)
+#   14:00-17:00 CST — factor mining (new factors)
+#
+# ALL results must pass shuffle test (p<0.05) to be considered valid.
+# The backtest framework uses look-ahead-safe lookback windows.
 
 set -uo pipefail
 
@@ -12,43 +15,59 @@ PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ_DIR"
 mkdir -p logs reports
 
-BUDGET=150  # ~2 hours per market at ~1 min/experiment
+HOUR=$(date +%H)
 DATE=$(date +%Y%m%d)
 PYTHON=/home/ivena/miniconda3/bin/python3
 
 echo "=========================================="
-echo "  Autoresearch Session — $DATE"
-echo "  Start: $(date '+%H:%M:%S')"
-echo "  Budget: $BUDGET per market (CN+US)"
+echo "  Autoresearch Session — $DATE $(date '+%H:%M')"
 echo "=========================================="
 
-# CN market: ~2 hours
-echo ""
-echo "=== [$(date '+%H:%M:%S')] A-Share Autoresearch ==="
-timeout 7200 $PYTHON -m src.agent.loop \
-    --market cn \
-    --budget $BUDGET \
-    --output "reports/autoresearch_cn_${DATE}.md" \
-    || echo "CN autoresearch ended (exit $?)"
+if [ "$HOUR" -ge 9 ] && [ "$HOUR" -lt 13 ]; then
+    # Morning session: strategy optimization + hyperparameter search
+    echo "  Mode: Strategy Optimization"
+    echo ""
 
-echo "=== [$(date '+%H:%M:%S')] CN done ==="
+    # Run strategy backtest grid search with different params
+    echo "=== Strategy Grid Search ==="
+    for LOOKBACK in 20 40 60; do
+        for HOLD in 5 10 20; do
+            echo "--- lookback=$LOOKBACK hold=$HOLD ---"
+            $PYTHON scripts/run_strategy.py --market cn --lookback $LOOKBACK --hold $HOLD 2>&1 | grep -E "Ann Return|Sharpe|Max DD|Excess" || true
+        done
+    done
 
-# US market: ~2 hours
-echo ""
-echo "=== [$(date '+%H:%M:%S')] US Autoresearch ==="
-timeout 7200 $PYTHON -m src.agent.loop \
-    --market us \
-    --budget $BUDGET \
-    --output "reports/autoresearch_us_${DATE}.md" \
-    || echo "US autoresearch ended (exit $?)"
+    echo ""
+    echo "=== SigReg Diagnostics ==="
+    $PYTHON scripts/sigreg_report.py || echo "SigReg failed"
 
-echo "=== [$(date '+%H:%M:%S')] US done ==="
+else
+    # Night/afternoon session: factor mining
+    echo "  Mode: Factor Mining"
+    BUDGET=50
 
-# Export new factors to pipeline DBs
-echo ""
-echo "=== [$(date '+%H:%M:%S')] Exporting to pipelines ==="
-$PYTHON -m src.mining.export_to_pipeline --market cn || echo "CN export failed"
-$PYTHON -m src.mining.export_to_pipeline --market us || echo "US export failed"
+    echo ""
+    echo "=== [$(date '+%H:%M:%S')] A-Share Factor Mining ==="
+    timeout 3600 $PYTHON -m src.agent.loop \
+        --market cn \
+        --budget $BUDGET \
+        --output "reports/autoresearch_cn_${DATE}_${HOUR}.md" \
+        || echo "CN ended (exit $?)"
+
+    echo ""
+    echo "=== [$(date '+%H:%M:%S')] US Factor Mining ==="
+    timeout 3600 $PYTHON -m src.agent.loop \
+        --market us \
+        --budget $BUDGET \
+        --output "reports/autoresearch_us_${DATE}_${HOUR}.md" \
+        || echo "US ended (exit $?)"
+
+    # Export
+    echo ""
+    echo "=== Exporting ==="
+    $PYTHON -m src.mining.export_to_pipeline --market cn || echo "CN export failed"
+    $PYTHON -m src.mining.export_to_pipeline --market us || echo "US export failed"
+fi
 
 echo ""
 echo "=========================================="
