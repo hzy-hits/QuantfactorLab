@@ -35,7 +35,7 @@ def _open_us_db_readonly() -> duckdb.DuckDBPyConnection:
         atexit.register(lambda p=str(tmp): os.unlink(p) if os.path.exists(p) else None)
         return duckdb.connect(str(tmp), read_only=True)
 
-N_PICKS = 20  # top/bottom N stocks
+N_PICKS = 10  # stocks to hold
 
 
 def init_tables():
