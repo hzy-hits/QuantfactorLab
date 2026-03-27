@@ -571,8 +571,11 @@ class FactorSession:
                        promoted_at, retired_at, retire_reason
                 FROM factor_registry
                 WHERE market = ?
-                  AND status IN ('promoted', 'watchlist', 'retired')
+                  AND (status = 'promoted'
+                       OR (status IN ('retired', 'watchlist')
+                           AND retired_at >= CURRENT_TIMESTAMP - INTERVAL 7 DAY))
                 ORDER BY status, promoted_at DESC
+                LIMIT 25
             """, [self.market]).fetchall()
             con.close()
         except Exception:
@@ -828,7 +831,7 @@ class FactorSession:
                 ["claude", "-p", prompt],
                 capture_output=True,
                 text=True,
-                timeout=300,  # 5 min — long prompts need time
+                timeout=600,  # 10 min — prompts include full factor registry
             )
             if result.returncode == 0:
                 return result.stdout.strip()

@@ -55,7 +55,7 @@ if [ "$HOUR" -ge 9 ] && [ "$HOUR" -lt 13 ]; then
 else
     # Night/afternoon session: factor mining
     echo "  Mode: Factor Mining"
-    BUDGET=50
+    BUDGET=30  # 30 experiments × ~30s = ~15min per market, fits in 1hr
 
     echo ""
     echo "=== [$(date '+%H:%M:%S')] A-Share Factor Mining ==="
