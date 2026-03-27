@@ -213,31 +213,58 @@ def show_today(market: str, cfg: StrategyConfig):
     entry_date = latest.date() if hasattr(latest, 'date') else latest
     exit_date = entry_date + _dt.timedelta(days=int(cfg.hold_max * 1.5))  # approximate
 
-    print(f"\n{'═'*70}")
-    print(f"  {label} 交易指令 — {entry_date}")
-    print(f"{'═'*70}")
-    print(f"  因子: {factor_name}")
-    print(f"  健康: {health_icon} {health['health_score']}")
-    print()
+    # Run wavelet health on this specific factor
+    from src.evaluate.signal_analysis import full_diagnosis
+    from scipy.stats import spearmanr as _sp2
+    factor_ics = []
+    for dt in lb_dates:
+        day = fdata[fdata[date_col] == dt].dropna(subset=["factor_value", "ret_next"])
+        if len(day) >= 30:
+            rho, _ = _sp2(day["factor_value"], day["ret_next"])
+            if not np.isnan(rho):
+                factor_ics.append(rho)
 
-    if health["health_score"] < 0.4:
-        print(f"  ⚠️ 因子健康度过低, 建议观望不操作")
+    wavelet_diag = full_diagnosis(np.array(factor_ics)) if len(factor_ics) >= 30 else None
+
+    if wavelet_diag:
+        w_action = wavelet_diag["action"]
+        w_icon = {"EXIT": "🔴", "REDUCE": "🟡", "HOLD": "🟢"}.get(w_action, "⚪")
+        suggested_hold = wavelet_diag["suggested_hold_days"]
+        actual_hold = min(cfg.hold_max, max(3, suggested_hold))
+    else:
+        w_action = "HOLD"
+        w_icon = "⚪"
+        actual_hold = cfg.hold_max
+
+    import datetime as _dt
+    exit_date = entry_date + _dt.timedelta(days=int(actual_hold * 1.5))
+
+    print(f"")
+    print(f"{'═'*70}")
+    print(f"  {label} — {entry_date}")
+    print(f"{'═'*70}")
+    print(f"")
+
+    if w_action == "EXIT":
+        print(f"  {w_icon} 因子正在衰减，建议观望不操作。")
+        print(f"  原因: {wavelet_diag['reason']}")
+        print(f"  等下一次健康因子出现再建仓。")
         print(f"{'═'*70}")
         return
 
-    print(f"  ┌─────────────────────────────────────────────────┐")
-    print(f"  │                   使 用 指 南                    │")
-    print(f"  ├─────────────────────────────────────────────────┤")
-    print(f"  │ 建仓时机: 收到报告后下一个交易日开盘价附近买入  │")
-    print(f"  │ 持仓周期: {cfg.hold_max} 个交易日 (预计平仓日: ~{exit_date})     │")
-    print(f"  │ 止损规则: 收盘价跌破止损价 → 次日开盘卖出       │")
-    print(f"  │ 止盈规则: 收盘价涨过止盈价 → 次日开盘卖出       │")
-    print(f"  │ 到期规则: 持满 {cfg.hold_max} 天后全部平仓, 等待新指令     │")
+    # Simple, direct language
+    print(f"  策略: 买入波动率最低的 {cfg.n_picks} 只股票")
+    print(f"  依据: {factor_name} (选波动最稳定的股票)")
+    print(f"  状态: {w_icon} {'正常' if w_action == 'HOLD' else '注意衰减信号'}")
+    print(f"")
+    print(f"  怎么操作:")
+    print(f"    1. 明天开盘买入下面 {cfg.n_picks} 只")
+    print(f"    2. 持有 {actual_hold} 个交易日 (到 ~{exit_date} 全卖)")
+    print(f"    3. 每天看一眼: 跌破止损价 → 第二天开盘卖掉那只")
+    print(f"    4. 涨到止盈价 → 第二天开盘卖掉那只")
     if market == "cn":
-        print(f"  │ T+1 注意: 买入当天不能卖, 最早次日可卖出       │")
-    print(f"  │ 健康监控: 如因子健康度降至 🔴, 提前全部平仓      │")
-    print(f"  └─────────────────────────────────────────────────┘")
-    print()
+        print(f"    5. 买入当天不能卖 (T+1)")
+    print(f"")
 
     # Position sizing
     sizing_data = []
