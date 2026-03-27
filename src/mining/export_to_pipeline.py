@@ -328,7 +328,7 @@ def export(market: str, as_of: str | None = None):
     from src.strategy.rolling_best import select_best_factor, StrategyConfig
     from scipy.stats import spearmanr
 
-    strat_cfg = StrategyConfig(lookback=40, hold_max=20, n_picks=20)
+    strat_cfg = StrategyConfig(lookback=40, hold_max=5, n_picks=10)
 
     # Compute multi-horizon returns for factor evaluation
     prices_sorted[f"ret_{strat_cfg.hold_max}d"] = (

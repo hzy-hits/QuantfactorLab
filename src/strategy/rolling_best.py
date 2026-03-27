@@ -19,9 +19,9 @@ from dataclasses import dataclass
 @dataclass
 class StrategyConfig:
     lookback: int = 40        # days to look back for factor selection
-    hold_max: int = 20        # max holding period (days)
-    hold_min: int = 3         # min holding period (avoid T+1 churn)
-    rebalance: int = 20       # rebalance frequency (= hold_max for non-overlapping)
+    hold_max: int = 5         # max holding period (days)
+    hold_min: int = 2         # min holding period (T+1 constraint)
+    rebalance: int = 5        # rebalance frequency (= hold_max for non-overlapping)
     n_picks: int = 10         # stocks to hold
     ic_exit_window: int = 10  # rolling window for IC health check
     ic_exit_threshold: float = -0.02  # IC below this → exit early

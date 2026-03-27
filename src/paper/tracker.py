@@ -129,7 +129,7 @@ def record(as_of: str | None = None, n: int = N_PICKS):
 
         dates = sorted(prices[date_col].unique())
         latest = dates[-1]
-        cfg = StrategyConfig(lookback=40, hold_max=20, n_picks=n)
+        cfg = StrategyConfig(lookback=40, hold_max=5, n_picks=n)
         lb_dates = dates[-cfg.lookback - 1:-1]
 
         factor_name, side, sharpe = select_best_factor(all_factors, lb_dates, cfg.hold_max, date_col, n)

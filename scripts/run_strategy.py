@@ -313,7 +313,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--market", choices=["cn", "us"], required=True)
     parser.add_argument("--lookback", type=int, default=40)
-    parser.add_argument("--hold", type=int, default=20)
+    parser.add_argument("--hold", type=int, default=5)
     parser.add_argument("--n-picks", type=int, default=10)
     parser.add_argument("--ic-exit", type=float, default=-0.02)
     parser.add_argument("--today", action="store_true", help="Show today's picks")
