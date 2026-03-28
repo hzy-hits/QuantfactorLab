@@ -550,7 +550,7 @@ class FactorSession:
         market: str,
         budget: int = 50,
         db_path: str | None = None,
-        model: str = "claude-sonnet-4-6",
+        model: str = "claude-opus-4-6",
     ):
         self.market = market
         self.budget = budget
@@ -928,7 +928,7 @@ def main():
     parser = argparse.ArgumentParser(description="Factor Lab agent session")
     parser.add_argument("--market", choices=["cn", "us"], required=True)
     parser.add_argument("--budget", type=int, default=50)
-    parser.add_argument("--model", default="claude-sonnet-4-6")
+    parser.add_argument("--model", default="claude-opus-4-6")
     parser.add_argument("--output", default=None, help="Output markdown path")
     args = parser.parse_args()
 
