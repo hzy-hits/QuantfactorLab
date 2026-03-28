@@ -825,23 +825,39 @@ class FactorSession:
         except Exception as e:
             logger.warning(f"Anthropic SDK call failed: {e}, falling back to claude CLI")
 
-        # Fallback: subprocess claude -p
-        try:
-            result = subprocess.run(
-                ["claude", "-p", prompt],
-                capture_output=True,
-                text=True,
-                timeout=600,  # 10 min — prompts include full factor registry
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-            else:
-                raise RuntimeError(f"claude CLI failed: {result.stderr}")
-        except FileNotFoundError:
-            raise RuntimeError(
-                "Neither anthropic SDK nor claude CLI available. "
-                "Install anthropic: pip install anthropic"
-            )
+        # Fallback: subprocess claude -p (with retry)
+        import os
+        env = os.environ.copy()
+        env["HOME"] = os.path.expanduser("~")  # ensure HOME is set for auth
+
+        for attempt in range(3):
+            try:
+                result = subprocess.run(
+                    ["claude", "-p", prompt, "--verbose"],
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                    env=env,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
+                err = result.stderr.strip() or f"exit code {result.returncode}, no output"
+                if attempt < 2:
+                    logger.warning(f"claude CLI attempt {attempt+1} failed: {err}, retrying in 10s")
+                    import time
+                    time.sleep(10)
+                else:
+                    raise RuntimeError(f"claude CLI failed after 3 attempts: {err}")
+            except subprocess.TimeoutExpired:
+                if attempt < 2:
+                    logger.warning(f"claude CLI attempt {attempt+1} timed out, retrying")
+                else:
+                    raise RuntimeError("claude CLI timed out after 3 attempts")
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "Neither anthropic SDK nor claude CLI available. "
+                    "Install anthropic: pip install anthropic"
+                )
 
     def _build_summary(self, top3_oos: list[dict]) -> str:
         """Build a human-readable session summary."""
