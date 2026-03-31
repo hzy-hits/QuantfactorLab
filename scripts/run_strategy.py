@@ -13,7 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import argparse
-import pickle
 import time
 
 import duckdb
@@ -22,12 +21,12 @@ import pandas as pd
 
 from src.dsl.parser import parse
 from src.dsl.compute import compute_factor
+from src.market_data import load_market_prices
 from src.strategy.rolling_best import StrategyConfig, backtest, select_best_factor
 
 
 def load_data(market: str):
-    cache = Path(f"data/.cache/{market}_prices.pkl")
-    prices = pickle.load(open(cache, "rb"))
+    prices = load_market_prices(market)
 
     sym_col = "ts_code" if market == "cn" else "symbol"
     date_col = "trade_date" if market == "cn" else "date"
@@ -58,6 +57,25 @@ def load_data(market: str):
             pass
 
     return prices, all_factors, sym_col, date_col
+
+
+def _resolve_effective_trade_date(
+    prices: pd.DataFrame,
+    date_col: str,
+    as_of: str | None,
+) -> tuple[pd.Timestamp, pd.Timestamp | None]:
+    trade_dates = pd.Index(pd.to_datetime(prices[date_col], errors="coerce").dropna().unique()).sort_values()
+    if trade_dates.empty:
+        raise ValueError("No trade dates available")
+
+    requested_ts = pd.Timestamp(as_of) if as_of else None
+    if requested_ts is None:
+        return pd.Timestamp(trade_dates[-1]), None
+
+    eligible = trade_dates[trade_dates <= requested_ts]
+    if eligible.empty:
+        raise ValueError(f"No trade_date <= {as_of}")
+    return pd.Timestamp(eligible[-1]), requested_ts
 
 
 def run_backtest(market: str, cfg: StrategyConfig):
@@ -139,13 +157,19 @@ def run_backtest(market: str, cfg: StrategyConfig):
     print(f"\n  Elapsed: {time.time()-t0:.0f}s")
 
 
-def show_today(market: str, cfg: StrategyConfig):
+def show_today(market: str, cfg: StrategyConfig, as_of: str | None = None):
     """Output actionable trading instructions."""
     prices, all_factors, sym_col, date_col = load_data(market)
-    dates = sorted(prices[date_col].unique())
-    latest = dates[-1]
-    # Shift lookback back by hold_max to avoid using unrealized future returns
-    lb_dates = dates[-(cfg.lookback + cfg.hold_max) - 1 : -cfg.hold_max - 1]
+    trade_dates = pd.Index(pd.to_datetime(prices[date_col], errors="coerce").dropna().unique()).sort_values()
+    latest, requested_ts = _resolve_effective_trade_date(prices, date_col, as_of)
+    effective_idx = trade_dates.get_loc(latest)
+
+    lb_end = max(0, effective_idx - cfg.hold_max)
+    lb_start = max(0, lb_end - cfg.lookback)
+    lb_dates = list(trade_dates[lb_start:lb_end])
+    if not lb_dates:
+        print("Insufficient history for rolling selection")
+        return
 
     factor_name, side, sharpe = select_best_factor(
         all_factors, lb_dates, cfg.hold_max, date_col, cfg.n_picks
@@ -208,7 +232,6 @@ def show_today(market: str, cfg: StrategyConfig):
     label = "A股" if market == "cn" else "美股"
 
     # Compute hold end date
-    hold_end_idx = min(len(dates) - 1, len(dates) - 1)  # latest + hold_max
     import datetime as _dt
     entry_date = latest.date() if hasattr(latest, 'date') else latest
     exit_date = entry_date + _dt.timedelta(days=int(cfg.hold_max * 1.5))  # approximate
@@ -241,9 +264,14 @@ def show_today(market: str, cfg: StrategyConfig):
 
     print(f"")
     print(f"{'═'*70}")
-    print(f"  {label} — {entry_date}")
+    header_date = requested_ts.date().isoformat() if requested_ts is not None else entry_date.isoformat()
+    print(f"  {label} — {header_date}")
     print(f"{'═'*70}")
     print(f"")
+
+    if requested_ts is not None and requested_ts.date() != entry_date:
+        print(f"  数据截止: {entry_date} (请求日期 {requested_ts.date().isoformat()} 无更新交易数据)")
+        print(f"")
 
     if w_action == "EXIT":
         print(f"  {w_icon} 因子正在衰减，建议观望不操作。")
@@ -253,8 +281,9 @@ def show_today(market: str, cfg: StrategyConfig):
         return
 
     # Simple, direct language
-    print(f"  策略: 买入波动率最低的 {cfg.n_picks} 只股票")
-    print(f"  依据: {factor_name} (选波动最稳定的股票)")
+    side_note = "因子值最高" if side == "top" else "因子值最低"
+    print(f"  策略: 买入 {side_note} 的 {cfg.n_picks} 只股票")
+    print(f"  依据: {factor_name}")
     print(f"  状态: {w_icon} {'正常' if w_action == 'HOLD' else '注意衰减信号'}")
     print(f"")
     print(f"  怎么操作:")
@@ -317,6 +346,7 @@ def main():
     parser.add_argument("--n-picks", type=int, default=10)
     parser.add_argument("--ic-exit", type=float, default=-0.02)
     parser.add_argument("--today", action="store_true", help="Show today's picks")
+    parser.add_argument("--date", type=str, default=None, help="Target date YYYY-MM-DD")
     args = parser.parse_args()
 
     cfg = StrategyConfig(
@@ -328,7 +358,7 @@ def main():
     )
 
     if args.today:
-        show_today(args.market, cfg)
+        show_today(args.market, cfg, as_of=args.date)
     else:
         run_backtest(args.market, cfg)
 

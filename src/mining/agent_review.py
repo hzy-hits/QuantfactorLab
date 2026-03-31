@@ -2,146 +2,34 @@
 Agent-powered factor quality review + regime-aware selection.
 
 Called by daily_pipeline.py after programmatic mining.
-Uses Claude by default and falls back to Codex if Claude fails:
-  1. Review top 30 candidates for false signals (amihud-style traps)
-  2. Select best 3 based on current market regime
-  3. Generate brief factor commentary for research reports
+Uses the shared Factor Lab backend order:
+  1. Claude SDK / CLI when available
+  2. Codex fallback when Claude is unavailable or broken
 """
 import json
 import os
-import shutil
-import subprocess
-import tempfile
 from datetime import date
 from pathlib import Path
 
 import duckdb
 
+from src.agent.backends import call_agent
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _claude_sdk_available() -> bool:
-    """Only try SDK when explicit Anthropic credentials are present."""
-    return bool(
-        os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-    )
-
-
-def _call_claude_sdk(prompt: str, max_tokens: int = 2000) -> str:
-    """Primary path: Anthropic SDK."""
-    if not _claude_sdk_available():
-        raise RuntimeError("Anthropic SDK credentials not configured")
-
-    from anthropic import Anthropic
-
-    client = Anthropic()
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return resp.content[0].text
-
-
-def _call_claude_cli(prompt: str) -> str:
-    """Secondary path: claude CLI."""
-    result = subprocess.run(
-        ["claude", "-p", "--output-format", "text"],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=120,
-        env={"CLAUDECODE": "", **os.environ},
-    )
-    stdout = result.stdout.strip()
-    stderr = result.stderr.strip()
-
-    if result.returncode != 0:
-        detail = stderr or stdout or "no output"
-        raise RuntimeError(f"claude CLI failed (exit {result.returncode}): {detail[:240]}")
-
-    if not stdout:
-        detail = stderr or "no output"
-        raise RuntimeError(f"claude CLI returned empty output: {detail[:240]}")
-
-    return stdout
-
-
-def _call_codex_cli(prompt: str) -> str:
-    """Final fallback: Codex CLI in non-interactive exec mode."""
-    codex = shutil.which("codex")
-    if codex is None:
-        raise RuntimeError("codex CLI not found in PATH")
-
-    with tempfile.NamedTemporaryFile(prefix="factor_lab_codex_", suffix=".txt", delete=False) as tmp:
-        output_path = Path(tmp.name)
-
-    try:
-        result = subprocess.run(
-            [
-                codex,
-                "exec",
-                "--sandbox",
-                "read-only",
-                "--color",
-                "never",
-                "--skip-git-repo-check",
-                "-C",
-                str(REPO_ROOT),
-                "-o",
-                str(output_path),
-                "-",
-            ],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
-            env=os.environ.copy(),
-        )
-
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
-        if result.returncode != 0:
-            detail = stderr or stdout or "no output"
-            raise RuntimeError(f"codex exec failed (exit {result.returncode}): {detail[:240]}")
-
-        response = output_path.read_text(encoding="utf-8", errors="replace").strip() if output_path.exists() else ""
-        if not response:
-            detail = stderr or stdout or "no output"
-            raise RuntimeError(f"codex exec returned empty output: {detail[:240]}")
-
-        return response
-    finally:
-        try:
-            output_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-
 def _call_agent(prompt: str, max_tokens: int = 2000) -> str:
-    """Call Claude first; if both Claude paths fail, fall back to Codex."""
     try:
-        return _call_claude_sdk(prompt, max_tokens=max_tokens)
-    except Exception as sdk_error:
-        try:
-            print(f"  Claude SDK failed, falling back to claude CLI: {sdk_error}")
-            return _call_claude_cli(prompt)
-        except Exception as cli_error:
-            try:
-                print(f"  Claude CLI failed, falling back to Codex: {cli_error}")
-                return _call_codex_cli(prompt)
-            except Exception as codex_error:
-                print(
-                    "  Agent call failed "
-                    f"(Claude SDK: {sdk_error}; Claude CLI: {cli_error}; Codex: {codex_error})"
-                )
-                return ""
+        return call_agent(
+            prompt,
+            model=os.environ.get("FACTOR_LAB_AGENT_MODEL", "claude-sonnet-4-6"),
+            max_tokens=max_tokens,
+            repo_root=REPO_ROOT,
+        )
+    except Exception as exc:
+        print(f"  Agent call failed ({exc})")
+        return ""
 
 
 def agent_quality_review(candidates: list[dict], market: str) -> list[dict]:

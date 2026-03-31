@@ -18,8 +18,8 @@ import argparse
 import hashlib
 import json
 import logging
-import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -41,8 +41,10 @@ from src.agent.prompts import (
     parse_agent_response,
     ParsedResponse,
 )
+from src.agent.backends import call_agent
 
 logger = logging.getLogger(__name__)
+EXPERIMENTS_FILE = Path(__file__).resolve().parents[2] / "experiments.jsonl"
 
 # ---------------------------------------------------------------------------
 # Market configurations (consistent with evaluate/run_evaluation.py)
@@ -194,6 +196,12 @@ def _compute_basic_features(prices: pd.DataFrame, sym_col: str, date_col: str) -
             if avg_vol > 0:
                 vol_ratio[i] = volumes[i] / avg_vol
 
+        # CN-specific columns to pass through (from daily_basic JOIN)
+        extra_cols = [c for c in g.columns if c in (
+            "amount", "turnover_rate", "pe_ttm", "pb", "ps_ttm",
+            "market_cap", "circ_market_cap",
+        )]
+
         for i in range(20, n):
             row = {
                 sym_col: sym,
@@ -208,9 +216,67 @@ def _compute_basic_features(prices: pd.DataFrame, sym_col: str, date_col: str) -
                 "ret_20d": ret_20d[i],
                 "volume_ratio": vol_ratio[i],
             }
+            # Pass through enrichment columns (amount, turnover_rate, etc.)
+            for col in extra_cols:
+                row[col] = g[col].values[i]
             results.append(row)
 
     return pd.DataFrame(results)
+
+
+def _append_experiment_rows(
+    session_id: str,
+    market: str,
+    experiments: list[dict],
+    top3_oos: list[dict],
+) -> None:
+    if not experiments:
+        return
+
+    if EXPERIMENTS_FILE.exists():
+        existing_text = EXPERIMENTS_FILE.read_text(encoding="utf-8", errors="replace")
+        if f'"session_id": "{session_id}"' in existing_text:
+            return
+
+    oos_by_formula = {
+        exp["formula"]: "PASS" if exp.get("oos_pass") else "FAIL"
+        for exp in top3_oos
+    }
+    rows = []
+    ts = datetime.now().astimezone().isoformat()
+    for exp in experiments:
+        row = {
+            "ts": ts,
+            "session_id": session_id,
+            "market": market,
+            "formula": exp.get("formula", ""),
+            "name": exp.get("name", ""),
+            "is_ic": round(float(exp.get("is_ic", 0.0)), 4),
+            "is_ic_ir": round(float(exp.get("is_ic_ir", 0.0)), 3),
+            "is_sharpe": round(float(exp.get("is_sharpe", 0.0)), 3),
+            "is_turnover": round(float(exp.get("is_turnover", 0.0)), 3),
+            "is_monotonicity": round(float(exp.get("is_monotonicity", 0.0)), 3),
+            "gates": "PASS" if exp.get("gates_passed") else "FAIL",
+            "status": exp.get("status", "evaluated"),
+            "eval_seconds": round(float(exp.get("eval_seconds", 0.0)), 1),
+        }
+        oos = oos_by_formula.get(exp.get("formula", ""))
+        if oos is not None:
+            row["oos"] = oos
+        rows.append(json.dumps(row, ensure_ascii=False))
+
+    prefix = ""
+    if EXPERIMENTS_FILE.exists() and EXPERIMENTS_FILE.stat().st_size > 0:
+        last_byte = EXPERIMENTS_FILE.read_bytes()[-1:]
+        if last_byte != b"\n":
+            prefix = "\n"
+
+    with EXPERIMENTS_FILE.open("a", encoding="utf-8") as fh:
+        if prefix:
+            fh.write(prefix)
+        for row in rows:
+            fh.write(row)
+            fh.write("\n")
 
 
 def _compute_dsl_factor(
@@ -634,6 +700,7 @@ class FactorSession:
         # Main experiment loop
         for exp_i in range(self.budget):
             budget_remaining = self.budget - exp_i - 1
+            exp_started = time.time()
 
             print(f"--- Experiment {exp_i + 1}/{self.budget} ---")
 
@@ -665,6 +732,8 @@ class FactorSession:
                     "is_monotonicity": 0.0,
                     "gates_passed": False,
                     "gate_details": {},
+                    "status": "parse_error",
+                    "eval_seconds": time.time() - exp_started,
                     "error": "parse_error",
                 })
                 continue
@@ -700,6 +769,8 @@ class FactorSession:
                     "is_monotonicity": 0.0,
                     "gates_passed": False,
                     "gate_details": {},
+                    "status": "compute_error",
+                    "eval_seconds": time.time() - exp_started,
                     "error": "compute_error",
                 })
                 continue
@@ -751,6 +822,8 @@ class FactorSession:
                     }
                     for f in bt_result.fold_metrics
                 ],
+                "status": "evaluated",
+                "eval_seconds": time.time() - exp_started,
                 # Keep factor_df reference for potential OOS check
                 "_factor_df": factor_df,
             }
@@ -794,6 +867,7 @@ class FactorSession:
             exp.pop("_factor_df", None)
 
         summary = self._build_summary(top3_oos)
+        _append_experiment_rows(self.session_id, self.market, self.experiments, top3_oos)
         print()
         print(summary)
 
@@ -807,57 +881,14 @@ class FactorSession:
         )
 
     def _ask_agent(self, prompt: str) -> str:
-        """Call Claude API. Try anthropic SDK first, fall back to subprocess."""
-        # Try Anthropic SDK
-        try:
-            if self._client is None:
-                from anthropic import Anthropic
-                self._client = Anthropic()
-
-            resp = self._client.messages.create(
-                model=self.model,
-                max_tokens=1000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return resp.content[0].text
-        except ImportError:
-            logger.info("Anthropic SDK not installed, falling back to claude CLI")
-        except Exception as e:
-            logger.warning(f"Anthropic SDK call failed: {e}, falling back to claude CLI")
-
-        # Fallback: subprocess claude -p (with retry)
-        import os
-        env = os.environ.copy()
-        env["HOME"] = os.path.expanduser("~")  # ensure HOME is set for auth
-
-        for attempt in range(3):
-            try:
-                result = subprocess.run(
-                    ["claude", "-p", prompt, "--verbose"],
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                    env=env,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
-                err = result.stderr.strip() or f"exit code {result.returncode}, no output"
-                if attempt < 2:
-                    logger.warning(f"claude CLI attempt {attempt+1} failed: {err}, retrying in 10s")
-                    import time
-                    time.sleep(10)
-                else:
-                    raise RuntimeError(f"claude CLI failed after 3 attempts: {err}")
-            except subprocess.TimeoutExpired:
-                if attempt < 2:
-                    logger.warning(f"claude CLI attempt {attempt+1} timed out, retrying")
-                else:
-                    raise RuntimeError("claude CLI timed out after 3 attempts")
-            except FileNotFoundError:
-                raise RuntimeError(
-                    "Neither anthropic SDK nor claude CLI available. "
-                    "Install anthropic: pip install anthropic"
-                )
+        return call_agent(
+            prompt,
+            model=self.model,
+            max_tokens=1000,
+            repo_root=Path(__file__).resolve().parents[2],
+            claude_timeout=120,
+            codex_timeout=300,
+        )
 
     def _build_summary(self, top3_oos: list[dict]) -> str:
         """Build a human-readable session summary."""

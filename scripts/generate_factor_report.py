@@ -25,23 +25,76 @@ FACTOR_LAB_DIR = Path(__file__).resolve().parent.parent
 FACTOR_LAB_DB = FACTOR_LAB_DIR / "data" / "factor_lab.duckdb"
 EXPERIMENTS_FILE = FACTOR_LAB_DIR / "experiments.jsonl"
 JOURNAL_FILE = FACTOR_LAB_DIR / "research_journal.md"
+REPORTS_DIR = FACTOR_LAB_DIR / "reports"
 
 
 def load_experiments(target_date: str) -> list[dict]:
     """Load experiments from JSONL for a given date."""
-    if not EXPERIMENTS_FILE.exists():
-        return []
     experiments = []
-    for line in EXPERIMENTS_FILE.read_text().strip().split("\n"):
-        if not line.strip():
+    if EXPERIMENTS_FILE.exists():
+        for line in EXPERIMENTS_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                ts = entry.get("ts", "")
+                if ts.startswith(target_date):
+                    experiments.append(entry)
+            except json.JSONDecodeError:
+                continue
+
+    fallback = _load_experiments_from_reports(target_date)
+    if fallback and len(fallback) > len(experiments):
+        return fallback
+    return experiments
+
+
+def _parse_markdown_table(lines: list[str], header: str) -> list[list[str]]:
+    for idx, line in enumerate(lines):
+        if line.strip() != header:
             continue
-        try:
-            entry = json.loads(line)
-            ts = entry.get("ts", "")
-            if ts.startswith(target_date):
-                experiments.append(entry)
-        except json.JSONDecodeError:
-            continue
+        rows = []
+        for row in lines[idx + 2:]:
+            if not row.startswith("|"):
+                break
+            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            rows.append(cells)
+        return rows
+    return []
+
+
+def _load_experiments_from_reports(target_date: str) -> list[dict]:
+    target_token = target_date.replace("-", "")
+    experiments = []
+
+    for path in sorted(REPORTS_DIR.glob(f"autoresearch_*_{target_token}*.md")):
+        market = "cn" if "_cn_" in path.name else "us" if "_us_" in path.name else ""
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        oos_rows = _parse_markdown_table(lines, "| Name | Formula | IS IC | OOS |")
+        oos_by_name = {
+            row[0]: row[3]
+            for row in oos_rows
+            if len(row) >= 4
+        }
+
+        exp_rows = _parse_markdown_table(
+            lines,
+            "| # | Name | Formula | IC | IC_IR | Sharpe | Gates |",
+        )
+        for row in exp_rows:
+            if len(row) < 7:
+                continue
+            name = row[1]
+            experiments.append({
+                "ts": f"{target_date}T00:00:00+08:00",
+                "market": market,
+                "name": name,
+                "formula": row[2].strip("`"),
+                "gates": row[6],
+                "oos": oos_by_name.get(name),
+                "status": "evaluated",
+            })
+
     return experiments
 
 

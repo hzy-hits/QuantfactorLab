@@ -18,10 +18,12 @@ mkdir -p logs reports
 HOUR=$(date +%H)
 DATE=$(date +%Y%m%d)
 PYTHON=/home/ivena/miniconda3/bin/python3
+export FACTOR_LAB_AGENT_BACKEND="${FACTOR_LAB_AGENT_BACKEND:-codex}"
 
 echo "=========================================="
 echo "  Autoresearch Session — $DATE $(date '+%H:%M')"
 echo "=========================================="
+echo "  Agent backend: $FACTOR_LAB_AGENT_BACKEND"
 
 if [ "$HOUR" -ge 9 ] && [ "$HOUR" -lt 13 ]; then
     # Morning session: strategy optimization + hyperparameter search

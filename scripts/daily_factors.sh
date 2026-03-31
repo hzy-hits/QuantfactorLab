@@ -10,11 +10,13 @@ set -uo pipefail
 PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ_DIR"
 mkdir -p logs data
+export FACTOR_LAB_AGENT_BACKEND="${FACTOR_LAB_AGENT_BACKEND:-codex}"
 
 echo "=========================================="
 echo "  Daily Factor Pipeline"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
 echo "=========================================="
+echo "  Agent backend: $FACTOR_LAB_AGENT_BACKEND"
 
 # CN factors
 echo ""

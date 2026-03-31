@@ -8,7 +8,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import pickle
 import numpy as np
 import pandas as pd
 import duckdb
@@ -16,6 +15,7 @@ from scipy.stats import spearmanr
 
 from src.dsl.parser import parse
 from src.dsl.compute import compute_factor
+from src.market_data import load_forward_returns, load_market_prices
 from src.evaluate.sigreg import (
     factor_diversity_score,
     multi_collinearity_check,
@@ -23,18 +23,11 @@ from src.evaluate.sigreg import (
 )
 
 FACTOR_LAB_DB = "data/factor_lab.duckdb"
-CACHE_DIR = Path("data/.cache")
 
 
 def run_diagnostics(market: str):
-    cache_file = CACHE_DIR / f"{market}_prices.pkl"
-    fwd_file = CACHE_DIR / f"{market}_fwd.pkl"
-    if not cache_file.exists() or not fwd_file.exists():
-        print(f"  Cache not found for {market}, skipping")
-        return
-
-    prices = pickle.load(open(cache_file, "rb"))
-    fwd = pickle.load(open(fwd_file, "rb"))
+    prices = load_market_prices(market)
+    fwd = load_forward_returns(market, prices=prices)
 
     sym_col = "ts_code" if market == "cn" else "symbol"
     date_col = "trade_date" if market == "cn" else "date"
