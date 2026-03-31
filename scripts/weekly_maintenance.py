@@ -12,18 +12,24 @@ Cron:
     17 10 * * 6 cd /home/ivena/coding/python/factor-lab && python3 scripts/weekly_maintenance.py >> logs/maintenance.log 2>&1
 """
 import argparse
+import sys
 import time
 from datetime import date, timedelta
+from pathlib import Path
 
 import duckdb
 import pandas as pd
 import tushare as ts
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.paths import QUANT_CN_DB, QUANT_CN_ROOT
+
 # ── Config ───────────────────────────────────────────────────────────────────
 
-CN_DB = "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb"
-CN_CONFIG = "/home/ivena/coding/rust/quant-research-cn/config.yaml"
+CN_DB = str(QUANT_CN_DB)
+CN_CONFIG = QUANT_CN_ROOT / "config.yaml"
 
 # Tables to check and backfill
 TABLES = {
@@ -52,7 +58,7 @@ API_DELAY = 0.35
 
 
 def load_token() -> str:
-    with open(CN_CONFIG) as f:
+    with CN_CONFIG.open() as f:
         cfg = yaml.safe_load(f)
     return cfg["api"]["tushare_token"]
 

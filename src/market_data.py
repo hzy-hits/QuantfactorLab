@@ -8,13 +8,13 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
+from src.paths import FACTOR_LAB_ROOT, QUANT_CN_DB, QUANT_US_DB
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CACHE_DIR = PROJECT_ROOT / "data" / ".cache"
+CACHE_DIR = FACTOR_LAB_ROOT / "data" / ".cache"
 
 MARKET_CONFIGS = {
     "cn": {
-        "db_path": Path("/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb"),
+        "db_path": QUANT_CN_DB,
         "cache_path": CACHE_DIR / "cn_prices.pkl",
         "fwd_path": CACHE_DIR / "cn_fwd.pkl",
         "sym_col": "ts_code",
@@ -33,7 +33,7 @@ MARKET_CONFIGS = {
         """,
     },
     "us": {
-        "db_path": Path("/home/ivena/coding/python/quant-research-v1/data/quant.duckdb"),
+        "db_path": QUANT_US_DB,
         "cache_path": CACHE_DIR / "us_prices.pkl",
         "fwd_path": CACHE_DIR / "us_fwd.pkl",
         "sym_col": "symbol",

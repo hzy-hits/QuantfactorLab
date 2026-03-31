@@ -25,12 +25,13 @@ from src.evaluate.quintile import compute_quintile_returns
 from src.evaluate.correlation import factor_correlation_matrix, find_redundant_pairs
 from src.evaluate.turnover import compute_turnover
 from src.evaluate.rolling_ic import compute_rolling_ic, compute_ic_trend
+from src.paths import QUANT_CN_DB, QUANT_US_DB
 
 
 # Market configs
 CONFIGS = {
     "cn": {
-        "db_path": "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb",
+        "db_path": str(QUANT_CN_DB),
         "table": "prices",
         "sym_col": "ts_code",
         "date_col": "trade_date",
@@ -39,7 +40,7 @@ CONFIGS = {
         "label": "A-Share",
     },
     "us": {
-        "db_path": "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb",
+        "db_path": str(QUANT_US_DB),
         "table": "prices_daily",
         "sym_col": "symbol",
         "date_col": "date",

@@ -25,6 +25,7 @@ from src.dsl.compute import compute_factor
 from src.evaluate.forward_returns import compute_forward_returns
 from src.evaluate.ic import compute_ic_series, ic_summary
 from src.evaluate.quintile import compute_quintile_returns
+from src.paths import QUANT_CN_DB, QUANT_US_DB
 
 # ── Factor formula templates ──────────────────────────────────────────────────
 
@@ -189,7 +190,7 @@ def generate_factor_formulas(max_factors: int = 500) -> list[tuple[str, str, str
 
 CONFIGS = {
     "cn": {
-        "db_path": "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb",
+        "db_path": str(QUANT_CN_DB),
         "table": "prices", "sym_col": "ts_code", "date_col": "trade_date",
         "close_col": "close", "vol_col": "vol",
         "universe_top_n": 2000,
@@ -206,7 +207,7 @@ CONFIGS = {
         """,
     },
     "us": {
-        "db_path": "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb",
+        "db_path": str(QUANT_US_DB),
         "table": "prices_daily", "sym_col": "symbol", "date_col": "date",
         "close_col": "adj_close", "vol_col": "volume",
         "sql": "SELECT symbol as ts_code, date as trade_date, open, high, low, adj_close as close, volume FROM prices_daily WHERE adj_close > 0 ORDER BY symbol, date",

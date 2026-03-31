@@ -42,6 +42,7 @@ from src.agent.prompts import (
     ParsedResponse,
 )
 from src.agent.backends import call_agent
+from src.paths import FACTOR_LAB_DB, QUANT_CN_DB, QUANT_US_DB
 
 logger = logging.getLogger(__name__)
 EXPERIMENTS_FILE = Path(__file__).resolve().parents[2] / "experiments.jsonl"
@@ -53,7 +54,7 @@ EXPERIMENTS_FILE = Path(__file__).resolve().parents[2] / "experiments.jsonl"
 MARKET_CONFIGS = {
     "cn": {
         "market": "cn",
-        "db_path": "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb",
+        "db_path": str(QUANT_CN_DB),
         "table": "prices",
         "sym_col": "ts_code",
         "date_col": "trade_date",
@@ -65,7 +66,7 @@ MARKET_CONFIGS = {
     },
     "us": {
         "market": "us",
-        "db_path": "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb",
+        "db_path": str(QUANT_US_DB),
         "table": "prices_daily",
         "sym_col": "symbol",
         "date_col": "date",
@@ -629,7 +630,7 @@ class FactorSession:
     def _load_existing_factors(self) -> list[dict]:
         """Load promoted + recently retired factors from registry for agent context."""
         import duckdb
-        db_path = "/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb"
+        db_path = str(FACTOR_LAB_DB)
         try:
             con = duckdb.connect(db_path, read_only=True)
             rows = con.execute("""

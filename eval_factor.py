@@ -28,12 +28,12 @@ from src.dsl.parser import parse, DSLParseError
 from src.dsl.compute import compute_factor
 from src.backtest.walk_forward import walk_forward_backtest, run_oos_check
 from src.backtest.gates import check_gates, GateResult
+from src.paths import FACTOR_LAB_DB, FACTOR_LAB_ROOT, QUANT_CN_DB, QUANT_US_DB
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-FACTOR_LAB_DB = "/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb"
-CACHE_DIR = Path("/home/ivena/coding/python/factor-lab/data/.cache")
+CACHE_DIR = FACTOR_LAB_ROOT / "data" / ".cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 MARKET_CONFIGS = {
     "cn": {
-        "db_path": "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb",
+        "db_path": str(QUANT_CN_DB),
         "table": "prices",
         "sym_col": "ts_code",
         "date_col": "trade_date",
@@ -52,7 +52,7 @@ MARKET_CONFIGS = {
         "universe_top_n": 2000,  # Rolling top N by market_cap per day
     },
     "us": {
-        "db_path": "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb",
+        "db_path": str(QUANT_US_DB),
         "table": "prices_daily",
         "sym_col": "symbol",
         "date_col": "date",

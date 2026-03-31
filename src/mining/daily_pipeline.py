@@ -36,10 +36,10 @@ from src.evaluate.forward_returns import compute_forward_returns
 from src.evaluate.ic import compute_ic_series, ic_summary
 from src.evaluate.quintile import compute_quintile_returns
 from src.mining.batch_mine import generate_factor_formulas, CONFIGS
+from src.paths import FACTOR_LAB_DB
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-FACTOR_LAB_DB = "/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb"
 CANDIDATE_POOL_SIZE = 30
 PROMOTE_COUNT = 3
 MAX_PROMOTED = 30  # max active promoted factors at any time
@@ -64,12 +64,21 @@ HEALTH_RETIRE_DAYS = 5     # days on watchlist before retire
 HEALTH_RECOVER_IC = 0.01   # IC above this → recover from watchlist
 
 HORIZON_WEIGHTS = {7: 0.5, 14: 0.3, 30: 0.2}
+SIGREG_REDUNDANCY_SOFT = 0.55
+SIGREG_REDUNDANCY_HARD = 0.85
+SIGREG_HEALTH_WATCH_SCORE = 0.45
+SIGREG_HEALTH_RECOVER_SCORE = 0.65
+SIGREG_PENALTY_WEIGHTS = {
+    "redundancy": 0.45,
+    "diversity": 0.20,
+    "health": 0.35,
+}
 
 
 def init_db():
     """Create factor_lab.duckdb tables if not exist."""
-    Path(FACTOR_LAB_DB).parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(FACTOR_LAB_DB)
+    FACTOR_LAB_DB.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(FACTOR_LAB_DB))
     con.execute("""
         CREATE TABLE IF NOT EXISTS factor_registry (
             factor_id VARCHAR PRIMARY KEY,
@@ -244,6 +253,157 @@ def _candidate_metric_values(candidate: dict) -> list[float]:
         candidate.get("mono_7d", 0.0), candidate.get("mono_14d", 0.0), candidate.get("mono_30d", 0.0),
         candidate.get("q5_q1_7d", 0.0), candidate.get("q5_q1_14d", 0.0), candidate.get("q5_q1_30d", 0.0),
     ]
+
+
+def _latest_factor_snapshot(factor_df: pd.DataFrame) -> pd.Series | None:
+    if factor_df.empty:
+        return None
+
+    latest_date = factor_df["trade_date"].max()
+    latest = factor_df[factor_df["trade_date"] == latest_date][["ts_code", "factor_value"]].dropna()
+    if latest.empty:
+        return None
+
+    latest = latest.drop_duplicates(subset=["ts_code"], keep="last")
+    snapshot = latest.set_index("ts_code")["factor_value"]
+    return snapshot if len(snapshot) >= 25 else None
+
+
+def _load_promoted_factor_snapshots(market: str, prices: pd.DataFrame) -> dict[str, pd.Series]:
+    con = duckdb.connect(FACTOR_LAB_DB, read_only=True)
+    try:
+        rows = con.execute("""
+            SELECT factor_id, formula
+            FROM factor_registry
+            WHERE market=? AND status='promoted'
+        """, [market]).fetchall()
+    finally:
+        con.close()
+
+    snapshots: dict[str, pd.Series] = {}
+    for factor_id, formula in rows:
+        try:
+            factor_df = compute_factor(parse(formula), prices, sym_col="ts_code", date_col="trade_date")
+            snapshot = _latest_factor_snapshot(factor_df)
+            if snapshot is not None:
+                snapshots[factor_id] = snapshot
+        except Exception:
+            continue
+    return snapshots
+
+
+def _apply_sigreg_penalties(candidates: list[dict], market: str, prices: pd.DataFrame) -> list[dict]:
+    if not candidates:
+        return candidates
+
+    from src.evaluate.sigreg import (
+        factor_diversity_score,
+        ic_health_test,
+        multi_collinearity_check,
+    )
+
+    promoted_snapshots = _load_promoted_factor_snapshots(market, prices)
+    base_diversity = factor_diversity_score(promoted_snapshots) if len(promoted_snapshots) >= 3 else {
+        "diversity_score": 1.0,
+        "cluster_warning": False,
+        "n_effective": len(promoted_snapshots),
+        "n_total": len(promoted_snapshots),
+    }
+
+    print(
+        "  SigReg penalty layer: "
+        f"{len(promoted_snapshots)} promoted refs, "
+        f"base_diversity={base_diversity.get('diversity_score', 1.0):.3f}"
+    )
+
+    penalized = []
+    for candidate in candidates:
+        latest_values = candidate.pop("_latest_values", None)
+        ic_series = np.asarray(candidate.pop("_ic_series", []), dtype=float)
+        existing_snapshots = {
+            fid: snap for fid, snap in promoted_snapshots.items() if fid != candidate["factor_id"]
+        }
+
+        redundancy = {"r_squared": 0.0, "is_redundant": False, "top_contributors": []}
+        if latest_values is not None and len(existing_snapshots) >= 3:
+            redundancy = multi_collinearity_check(
+                latest_values,
+                existing_snapshots,
+                threshold=SIGREG_REDUNDANCY_HARD,
+            )
+        redundancy_penalty = float(np.clip(
+            (float(redundancy.get("r_squared", 0.0)) - SIGREG_REDUNDANCY_SOFT)
+            / max(SIGREG_REDUNDANCY_HARD - SIGREG_REDUNDANCY_SOFT, 1e-9),
+            0.0,
+            1.0,
+        ))
+        if redundancy.get("is_redundant"):
+            redundancy_penalty = max(redundancy_penalty, 0.8)
+
+        diversity_before = (
+            factor_diversity_score(existing_snapshots)
+            if len(existing_snapshots) >= 3
+            else base_diversity
+        )
+        diversity_after = diversity_before
+        diversity_penalty = 0.0
+        if latest_values is not None:
+            trial = dict(existing_snapshots)
+            trial[candidate["factor_id"]] = latest_values
+            diversity_after = factor_diversity_score(trial)
+            before_score = float(diversity_before.get("diversity_score", 1.0))
+            after_score = float(diversity_after.get("diversity_score", 1.0))
+            diversity_drop = max(0.0, before_score - after_score)
+            diversity_penalty = float(np.clip(diversity_drop / 0.25, 0.0, 1.0))
+            if diversity_after.get("cluster_warning") and after_score < before_score:
+                diversity_penalty = min(1.0, diversity_penalty + 0.15)
+
+        health = {"health_score": 0.5, "regime_change_detected": False}
+        health_penalty = 0.0
+        clean_ic = ic_series[~np.isnan(ic_series)]
+        if len(clean_ic) >= 20:
+            health = ic_health_test(
+                clean_ic,
+                window=min(60, max(20, len(clean_ic) // 2)),
+            )
+            health_penalty = float(np.clip(
+                (0.60 - float(health.get("health_score", 0.5))) / 0.60,
+                0.0,
+                1.0,
+            ))
+            if health.get("regime_change_detected"):
+                health_penalty = min(1.0, health_penalty + 0.20)
+
+        total_penalty = (
+            SIGREG_PENALTY_WEIGHTS["redundancy"] * redundancy_penalty
+            + SIGREG_PENALTY_WEIGHTS["diversity"] * diversity_penalty
+            + SIGREG_PENALTY_WEIGHTS["health"] * health_penalty
+        )
+        multiplier = max(0.15, 1.0 - total_penalty)
+
+        candidate["sigreg_penalty"] = round(total_penalty, 3)
+        candidate["sigreg_multiplier"] = round(multiplier, 3)
+        candidate["rank_score"] = round(candidate["composite_score"] * multiplier, 6)
+        candidate["sigreg_redundancy_r2"] = float(redundancy.get("r_squared", 0.0))
+        candidate["sigreg_diversity_score"] = float(diversity_after.get("diversity_score", 1.0))
+        candidate["sigreg_health_score"] = float(health.get("health_score", 0.5))
+        candidate["sigreg_regime_change"] = bool(health.get("regime_change_detected", False))
+        penalized.append(candidate)
+
+    penalized.sort(key=lambda r: r.get("rank_score", r["composite_score"]), reverse=True)
+
+    for candidate in penalized[:5]:
+        print(
+            "    "
+            f"{candidate['name']}: raw={candidate['composite_score']:.4f}, "
+            f"rank={candidate.get('rank_score', candidate['composite_score']):.4f}, "
+            f"R2={candidate.get('sigreg_redundancy_r2', 0.0):.3f}, "
+            f"div={candidate.get('sigreg_diversity_score', 1.0):.3f}, "
+            f"health={candidate.get('sigreg_health_score', 0.5):.2f}"
+            + (" regime_change" if candidate.get("sigreg_regime_change") else "")
+        )
+
+    return penalized
 
 
 def _refresh_promoted_factor(con: duckdb.DuckDBPyConnection, factor_id: str, candidate: dict) -> None:
@@ -482,10 +642,13 @@ def step2_multi_horizon_backtest(candidates: list[dict], market: str) -> list[di
         fwd_all[h] = fwd_h
 
     enriched = []
+    shortest_horizon = min(HORIZONS)
     for c in candidates:
         try:
             ast = parse(c["formula"])
             factor_df = compute_factor(ast, prices, sym_col="ts_code", date_col="trade_date")
+            latest_values = _latest_factor_snapshot(factor_df)
+            reference_ic_series = np.array([], dtype=float)
 
             horizon_metrics = {}
             for h in HORIZONS:
@@ -498,9 +661,10 @@ def step2_multi_horizon_backtest(candidates: list[dict], market: str) -> list[di
                 if len(merged) < 200:
                     continue
 
-                ic_stats = ic_summary(compute_ic_series(
+                ic_df = compute_ic_series(
                     merged["factor_value"], merged[fwd_col], merged["trade_date"]
-                ))
+                )
+                ic_stats = ic_summary(ic_df)
                 q = compute_quintile_returns(
                     merged["factor_value"], merged[fwd_col], merged["trade_date"]
                 )
@@ -508,6 +672,8 @@ def step2_multi_horizon_backtest(candidates: list[dict], market: str) -> list[di
                     "ic": ic_stats["ic_mean"], "ic_ir": ic_stats["ic_ir"],
                     "mono": q["monotonicity"], "q5_q1": q["long_short_pct"],
                 }
+                if h == shortest_horizon and len(ic_df) > 0:
+                    reference_ic_series = ic_df["ic"].to_numpy(dtype=float)
 
             if len(horizon_metrics) < 2:
                 continue
@@ -533,12 +699,14 @@ def step2_multi_horizon_backtest(candidates: list[dict], market: str) -> list[di
             })
             c["composite_score"] = composite
             c["direction"] = _infer_direction_from_horizons(horizon_metrics, c["ic"])
+            c["_latest_values"] = latest_values
+            c["_ic_series"] = reference_ic_series
             enriched.append(c)
 
         except Exception as e:
             print(f"  {c['name']}: backtest error - {e}")
 
-    enriched.sort(key=lambda r: r["composite_score"], reverse=True)
+    enriched = _apply_sigreg_penalties(enriched, market, prices)
     print(f"  Enriched: {len(enriched)} candidates with multi-horizon metrics")
     return enriched
 
@@ -600,12 +768,21 @@ def step3_select_and_promote(candidates: list[dict], market: str):
 
         if existing:
             existing["status"] = "promoted"
-            print(f"  Re-promoted: {c['name']} (composite={c['composite_score']:.4f}, direction={c['direction']})")
+            print(
+                f"  Re-promoted: {c['name']} "
+                f"(raw={c['composite_score']:.4f}, rank={c.get('rank_score', c['composite_score']):.4f}, "
+                f"direction={c['direction']})"
+            )
         else:
             print(f"  Promoted: {c['name']} — {c['formula'][:60]}")
             print(
                 f"    IC 7/14/30d: {c.get('ic_7d',0):.4f} / "
                 f"{c.get('ic_14d',0):.4f} / {c.get('ic_30d',0):.4f} ({c['direction']})"
+            )
+            print(
+                f"    rank={c.get('rank_score', c['composite_score']):.4f} "
+                f"raw={c['composite_score']:.4f} "
+                f"sigreg_penalty={c.get('sigreg_penalty', 0.0):.3f}"
             )
 
     con.close()
@@ -621,6 +798,7 @@ def step4_health_check(market: str):
     con = duckdb.connect(FACTOR_LAB_DB)
     cfg = CONFIGS[market]
     today = date.today().isoformat()
+    from src.evaluate.sigreg import ic_health_test
 
     # Get all promoted + watchlist factors
     active = con.execute("""
@@ -678,36 +856,72 @@ def step4_health_check(market: str):
                 )
                 rolling_ic = float(ic_series["ic"].mean()) if len(ic_series) > 0 else 0.0
 
+            full_ic_series = compute_ic_series(
+                merged["factor_value"], merged["fwd_5d"], merged["trade_date"]
+            )
+            health = {"health_score": 0.5, "regime_change_detected": False}
+            if len(full_ic_series) >= 20:
+                health = ic_health_test(
+                    full_ic_series["ic"].to_numpy(dtype=float),
+                    window=min(60, max(20, len(full_ic_series) // 2)),
+                )
+            health_score = float(health.get("health_score", 0.5))
+            regime_change = bool(health.get("regime_change_detected", False))
+
             # Lifecycle transitions
             new_status = status
+            new_watch = watch_count
             if status == "promoted":
                 # Use abs(IC) for health check: short factors have negative IC by design
-                is_unhealthy = abs(rolling_ic) < HEALTH_WATCH_IC
+                reasons = []
+                if abs(rolling_ic) < HEALTH_WATCH_IC:
+                    reasons.append("IC too low")
+                if health_score < SIGREG_HEALTH_WATCH_SCORE:
+                    reasons.append(f"SigReg health={health_score:.2f}")
+                if regime_change:
+                    reasons.append("regime change")
+                is_unhealthy = bool(reasons)
                 if is_unhealthy:
                     new_watch = watch_count + 1
-                    reason = "IC too low"
                     if new_watch >= HEALTH_WATCH_DAYS:
                         new_status = "watchlist"
-                        print(f"  ⚠️ {factor_id}: promoted → watchlist (IC={rolling_ic:.4f}, {reason}, {new_watch}d)")
+                        print(
+                            f"  ⚠️ {factor_id}: promoted → watchlist "
+                            f"(IC={rolling_ic:.4f}, health={health_score:.2f}, "
+                            f"{', '.join(reasons)}, {new_watch}d)"
+                        )
                     else:
-                        print(f"  📉 {factor_id}: IC={rolling_ic:.4f} {reason} ({new_watch}/{HEALTH_WATCH_DAYS} watch days)")
+                        print(
+                            f"  📉 {factor_id}: IC={rolling_ic:.4f}, health={health_score:.2f} "
+                            f"({' ; '.join(reasons)}) "
+                            f"({new_watch}/{HEALTH_WATCH_DAYS} watch days)"
+                        )
                 else:
                     new_watch = 0  # reset counter
-                    print(f"  ✅ {factor_id}: IC={rolling_ic:.4f} healthy")
+                    print(f"  ✅ {factor_id}: IC={rolling_ic:.4f}, health={health_score:.2f} healthy")
 
             elif status == "watchlist":
-                if abs(rolling_ic) >= HEALTH_RECOVER_IC:  # direction-agnostic
+                if abs(rolling_ic) >= HEALTH_RECOVER_IC and health_score >= SIGREG_HEALTH_RECOVER_SCORE and not regime_change:
                     new_status = "promoted"
                     new_watch = 0
-                    print(f"  🔄 {factor_id}: watchlist → promoted (IC recovered to {rolling_ic:.4f})")
+                    print(
+                        f"  🔄 {factor_id}: watchlist → promoted "
+                        f"(IC recovered to {rolling_ic:.4f}, health={health_score:.2f})"
+                    )
                 else:
                     new_watch = watch_count + 1
                     if new_watch >= HEALTH_WATCH_DAYS + HEALTH_RETIRE_DAYS:
                         new_status = "retired"
-                        print(f"  ❌ {factor_id}: watchlist → retired (IC={rolling_ic:.4f}, no recovery)")
+                        print(
+                            f"  ❌ {factor_id}: watchlist → retired "
+                            f"(IC={rolling_ic:.4f}, health={health_score:.2f}, no recovery)"
+                        )
                     else:
                         remaining = HEALTH_WATCH_DAYS + HEALTH_RETIRE_DAYS - new_watch
-                        print(f"  ⏳ {factor_id}: watchlist IC={rolling_ic:.4f} ({remaining}d to retire)")
+                        print(
+                            f"  ⏳ {factor_id}: watchlist IC={rolling_ic:.4f}, health={health_score:.2f} "
+                            f"({remaining}d to retire)"
+                        )
 
             # Update
             update_fields = {
@@ -724,7 +938,7 @@ def step4_health_check(market: str):
                     retired_at = CASE WHEN ?='retired' THEN CURRENT_TIMESTAMP ELSE retired_at END,
                     retire_reason = CASE WHEN ?='retired' THEN 'IC decay' ELSE retire_reason END
                 WHERE factor_id=?
-            """, [new_status, rolling_ic, new_watch if 'new_watch' in dir() else watch_count,
+            """, [new_status, rolling_ic, new_watch,
                   new_status, new_status, new_status, factor_id])
 
             # Log

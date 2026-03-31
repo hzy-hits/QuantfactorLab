@@ -22,6 +22,7 @@ import pandas as pd
 from src.dsl.parser import parse
 from src.dsl.compute import compute_factor
 from src.market_data import load_market_prices
+from src.paths import FACTOR_LAB_DB, QUANT_CN_DB
 from src.strategy.rolling_best import StrategyConfig, backtest, select_best_factor
 
 
@@ -36,7 +37,7 @@ def load_data(market: str):
         lambda x: x.shift(-1) / x - 1
     )
 
-    con = duckdb.connect("data/factor_lab.duckdb", read_only=True)
+    con = duckdb.connect(str(FACTOR_LAB_DB), read_only=True)
     promoted = con.execute(
         "SELECT name, formula FROM factor_registry WHERE market=? AND status='promoted'",
         [market],
@@ -222,7 +223,7 @@ def show_today(market: str, cfg: StrategyConfig, as_of: str | None = None):
     if market == "cn":
         try:
             import duckdb as _ddb2
-            _con = _ddb2.connect("/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb", read_only=True)
+            _con = _ddb2.connect(str(QUANT_CN_DB), read_only=True)
             _names = _con.execute("SELECT ts_code, name FROM stock_basic").fetchdf()
             name_map = dict(zip(_names["ts_code"], _names["name"]))
             _con.close()

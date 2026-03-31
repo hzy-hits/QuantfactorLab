@@ -26,12 +26,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.dsl.parser import parse
 from src.dsl.compute import compute_factor
-
-FACTOR_LAB_DB = "/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb"
+from src.paths import FACTOR_LAB_DB, QUANT_CN_DB, QUANT_US_DB
 
 PIPELINE_CONFIGS = {
     "cn": {
-        "db_path": "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb",
+        "db_path": str(QUANT_CN_DB),
         "price_sql": """
             SELECT p.ts_code, p.trade_date, p.open, p.high, p.low, p.close,
                    p.vol as volume, p.amount,
@@ -49,7 +48,7 @@ PIPELINE_CONFIGS = {
         "insert_sql": "INSERT OR REPLACE INTO analytics (ts_code, as_of, module, metric, value, detail) VALUES (?, ?, 'lab_factor', ?, ?, ?)",
     },
     "us": {
-        "db_path": "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb",
+        "db_path": str(QUANT_US_DB),
         "price_sql": "SELECT symbol as ts_code, date as trade_date, open, high, low, adj_close as close, volume FROM prices_daily WHERE adj_close > 0 ORDER BY symbol, date",
         "sym_col": "ts_code",
         "date_col": "trade_date",
@@ -232,11 +231,11 @@ def export(market: str, as_of: str | None = None):
     as_of = as_of or date.today().isoformat()
 
     # 1. Read promoted factors from factor_lab.duckdb
-    if not Path(FACTOR_LAB_DB).exists():
+    if not FACTOR_LAB_DB.exists():
         print(f"  Factor Lab DB not found, skipping")
         return 0
 
-    lab_con = duckdb.connect(FACTOR_LAB_DB, read_only=True)
+    lab_con = duckdb.connect(str(FACTOR_LAB_DB), read_only=True)
     promoted = lab_con.execute("""
         SELECT factor_id, formula, name, composite_score, direction, ic_7d, ic_14d, ic_30d
         FROM factor_registry

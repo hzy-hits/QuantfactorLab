@@ -15,8 +15,10 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-FACTOR_LAB_DB = "/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb"
-US_DB = "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb"
+from src.market_data import load_market_prices
+from src.paths import FACTOR_LAB_DB, QUANT_US_DB
+
+US_DB = str(QUANT_US_DB)
 
 
 def _open_us_db_readonly() -> duckdb.DuckDBPyConnection:
@@ -100,20 +102,19 @@ def record(as_of: str | None = None, n: int = N_PICKS):
 
     # Use rolling strategy directly
     try:
-        import pickle
         from src.dsl.parser import parse
         from src.dsl.compute import compute_factor
         from src.strategy.rolling_best import select_best_factor, StrategyConfig
         import duckdb as _ddb
 
-        prices = pickle.load(open("data/.cache/us_prices.pkl", "rb"))
+        prices = load_market_prices("us")
         sym_col, date_col = "symbol", "date"
         prices = prices.sort_values([sym_col, date_col])
         prices["ret_next"] = prices.groupby(sym_col)["close"].transform(lambda x: x.shift(-1) / x - 1)
         for h in [5, 10, 20]:
             prices[f"ret_{h}d"] = prices.groupby(sym_col)["close"].transform(lambda x: x.shift(-h) / x - 1)
 
-        con = _ddb.connect(FACTOR_LAB_DB, read_only=True)
+        con = _ddb.connect(str(FACTOR_LAB_DB), read_only=True)
         promoted = con.execute("SELECT name, formula FROM factor_registry WHERE market='us' AND status='promoted'").fetchdf()
         con.close()
 

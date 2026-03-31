@@ -7,7 +7,8 @@
 
 set -euo pipefail
 
-cd /home/ivena/coding/python/factor-lab
+PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$PROJ_DIR"
 
 MARKET="${1:-cn}"
 BUDGET="${2:-50}"
