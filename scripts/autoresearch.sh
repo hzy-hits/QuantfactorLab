@@ -19,11 +19,15 @@ HOUR=$(date +%H)
 DATE=$(date +%Y%m%d)
 PYTHON=/home/ivena/miniconda3/bin/python3
 export FACTOR_LAB_AGENT_BACKEND="${FACTOR_LAB_AGENT_BACKEND:-codex}"
+export FACTOR_LAB_CODEX_MODEL="${FACTOR_LAB_CODEX_MODEL:-gpt-5.4}"
+export FACTOR_LAB_CODEX_REASONING_EFFORT="${FACTOR_LAB_CODEX_REASONING_EFFORT:-xhigh}"
 
 echo "=========================================="
 echo "  Autoresearch Session — $DATE $(date '+%H:%M')"
 echo "=========================================="
 echo "  Agent backend: $FACTOR_LAB_AGENT_BACKEND"
+echo "  Codex model:   $FACTOR_LAB_CODEX_MODEL"
+echo "  Reasoning:     $FACTOR_LAB_CODEX_REASONING_EFFORT"
 
 if [ "$HOUR" -ge 9 ] && [ "$HOUR" -lt 13 ]; then
     # Morning session: strategy optimization + hyperparameter search

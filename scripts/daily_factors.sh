@@ -11,12 +11,16 @@ PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ_DIR"
 mkdir -p logs data
 export FACTOR_LAB_AGENT_BACKEND="${FACTOR_LAB_AGENT_BACKEND:-codex}"
+export FACTOR_LAB_CODEX_MODEL="${FACTOR_LAB_CODEX_MODEL:-gpt-5.4}"
+export FACTOR_LAB_CODEX_REASONING_EFFORT="${FACTOR_LAB_CODEX_REASONING_EFFORT:-xhigh}"
 
 echo "=========================================="
 echo "  Daily Factor Pipeline"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
 echo "=========================================="
 echo "  Agent backend: $FACTOR_LAB_AGENT_BACKEND"
+echo "  Codex model:   $FACTOR_LAB_CODEX_MODEL"
+echo "  Reasoning:     $FACTOR_LAB_CODEX_REASONING_EFFORT"
 
 # CN factors
 echo ""

@@ -15,6 +15,15 @@ def _backend_mode() -> str:
     return mode if mode in {"auto", "claude", "codex"} else "auto"
 
 
+def _codex_model() -> str:
+    return os.environ.get("FACTOR_LAB_CODEX_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+
+
+def _codex_reasoning_effort() -> str:
+    effort = os.environ.get("FACTOR_LAB_CODEX_REASONING_EFFORT", "xhigh").strip().lower()
+    return effort if effort in {"low", "medium", "high", "xhigh"} else "xhigh"
+
+
 def _claude_sdk_available() -> bool:
     return bool(
         os.environ.get("ANTHROPIC_API_KEY")
@@ -87,6 +96,10 @@ def _call_codex_cli(
             [
                 codex,
                 "exec",
+                "-m",
+                _codex_model(),
+                "-c",
+                f'model_reasoning_effort="{_codex_reasoning_effort()}"',
                 "--sandbox",
                 "read-only",
                 "--color",
