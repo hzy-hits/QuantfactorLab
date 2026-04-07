@@ -1,6 +1,6 @@
 # QuantfactorLab
 
-AI-driven quantitative alpha factor discovery platform. LLM agents propose factor hypotheses via a constrained DSL, the system validates them through walk-forward backtesting with strict anti-overfit controls, and promoted factors auto-inject into production quant pipelines for US equities and Chinese A-shares.
+AI-driven quantitative alpha factor discovery platform built around one asymmetry: **agents are good at generating hypotheses and bad at judging themselves**. QuantfactorLab lets LLMs search for factor ideas inside a constrained DSL, then forces every candidate through walk-forward validation, hidden holdouts, and anti-overfit gates before anything reaches production.
 
 <p align="left">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white" />
@@ -8,6 +8,12 @@ AI-driven quantitative alpha factor discovery platform. LLM agents propose facto
   <img alt="Claude" src="https://img.shields.io/badge/Agent-Claude%20%2F%20Codex-6b46c1" />
   <img alt="License" src="https://img.shields.io/badge/License-MIT-blue" />
 </p>
+
+## Thesis
+
+- **Constrained search beats arbitrary code**: agents propose formulas, not scripts
+- **The holdout stays hidden**: out-of-sample validation returns only `PASS` or `FAIL`
+- **Promotion is earned, not narrated**: only factors that clear hard statistical gates flow into production pipelines
 
 ## Architecture
 
