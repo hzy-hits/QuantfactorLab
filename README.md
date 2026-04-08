@@ -15,6 +15,12 @@ AI-driven quantitative alpha factor discovery platform built around one asymmetr
 - **The holdout stays hidden**: out-of-sample validation returns only `PASS` or `FAIL`
 - **Promotion is earned, not narrated**: only factors that clear hard statistical gates flow into production pipelines
 
+## Why This Problem Is Hard
+
+Factor mining gets dangerous the moment the search process can start learning the evaluator instead of the market.
+
+The design goal here is not "make the agent creative." It is to make autonomous search useful without letting it escape into arbitrary code, brute-force the search space, or optimize against the holdout indirectly.
+
 ## Architecture
 
 ```
@@ -46,14 +52,18 @@ Pipeline Integration
 
 ### Key Design Decisions
 
-- **Constrained DSL, not arbitrary code.** Agents write factors using ~35 operators (time-series, cross-sectional, utility) in a sandboxed expression language. No loops, recursion, or external data — prevents overfitting via complex control flow.
-- **OOS results are boolean only.** The agent sees "PASS" or "FAIL" for out-of-sample validation, never the actual metric values. This prevents reverse-engineering the holdout set.
-- **Hard budget cap.** 50 experiments per session limits multiple-testing inflation.
-- **Walk-forward expanding window.** Train from start of IS period, rolling test window — never full-sample results.
-- **Single composite signal.** Multiple promoted factors combine into one IC_IR-weighted `lab_composite` source, preventing Factor Lab from overwhelming existing pipeline signals.
-- **Auto-retirement.** Rolling 60-day IC < 0.01 triggers automatic factor retirement.
+The system is intentionally unfriendly to overfitting:
+
+- **Constrained DSL, not arbitrary code.** Agents write formulas in a sandboxed language with ~35 operators instead of scripts with loops, recursion, or external data.
+- **OOS results are boolean only.** The agent sees `PASS` or `FAIL`, never the holdout metric values, so it cannot optimize against the test set indirectly.
+- **Hard budget cap.** Each session gets 50 experiments; the agent cannot brute-force its way through the search space.
+- **Walk-forward expanding window.** Validation is chronological and leakage-aware, not a flattering full-sample backtest.
+- **Single composite signal.** Promoted factors merge into one IC_IR-weighted `lab_composite`, so Factor Lab augments the production stack instead of overwhelming it.
+- **Auto-retirement.** Promotion is reversible: rolling 60-day IC < 0.01 sends a factor back out of production.
 
 ### 5-Gate Validation System
+
+Any one metric can be gamed. Promotion requires passing the full stack:
 
 | Gate | CN Threshold | US Threshold | Purpose |
 |------|-------------|-------------|---------|
@@ -62,6 +72,14 @@ Pipeline Integration
 | Turnover | < 50%/month | < 40%/month | Tradeable, not noise-chasing |
 | Monotonicity | disabled | > 0.7 | Factor ranks stocks correctly |
 | Max Correlation | < 0.6 | < 0.6 | Adds new information vs existing factors |
+
+## Worked Example
+
+1. An agent proposes a factor formula plus a hypothesis in the DSL.
+2. The parser accepts only bounded expressions with whitelisted operators and windows.
+3. The backtest engine runs chronological walk-forward validation and all anti-overfit gates.
+4. The holdout stage returns only `PASS` or `FAIL`, so the agent cannot reverse-engineer OOS metrics.
+5. A passing factor enters the registry, contributes to `lab_composite`, and can later be retired automatically if the edge decays.
 
 ## Tech Stack
 
@@ -76,6 +94,8 @@ Pipeline Integration
 | Tooling | uv (package manager), pytest, cron scheduling |
 
 ### DSL Operators
+
+The DSL is narrow by design: enough to express hypotheses, not enough to hide arbitrary search.
 
 **Time-series** (per-stock, along time): `ts_mean`, `ts_std`, `ts_max`, `ts_min`, `ts_rank`, `ts_corr`, `ts_skew`, `ts_kurt`, `delta`, `pct_change`, `shift`, `decay_linear`, `decay_exp`, ...
 
