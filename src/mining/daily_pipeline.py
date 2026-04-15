@@ -15,7 +15,7 @@ Usage:
     python -m src.mining.daily_pipeline --market cn --skip-mine  # only health check + select
 
 Cron (06:00 CST, before morning pipeline):
-    0 6 * * 1-5 cd /home/ivena/coding/python/factor-lab && python3 -m src.mining.daily_pipeline --market cn >> logs/daily_cn.log 2>&1
+    0 6 * * 1-5 cd $FACTOR_LAB_ROOT && python3 -m src.mining.daily_pipeline --market cn >> logs/daily_cn.log 2>&1
 """
 import sys
 import argparse
@@ -36,7 +36,13 @@ from src.evaluate.forward_returns import compute_forward_returns
 from src.evaluate.ic import compute_ic_series, ic_summary
 from src.evaluate.quintile import compute_quintile_returns
 from src.mining.batch_mine import generate_factor_formulas, CONFIGS
-from src.paths import FACTOR_LAB_DB
+from src.paths import (
+    FACTOR_LAB_DB,
+    QUANT_CN_DB,
+    QUANT_CN_REPORT_DB,
+    QUANT_US_DB,
+    QUANT_US_REPORT_DB,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -156,6 +162,21 @@ def init_db():
             note VARCHAR,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (as_of, market, stage)
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS candidate_feedback (
+            date DATE NOT NULL,
+            market VARCHAR NOT NULL,
+            factor_id VARCHAR NOT NULL,
+            feedback_score DOUBLE,
+            feedback_multiplier DOUBLE,
+            missed_alpha_overlap DOUBLE,
+            stale_overlap DOUBLE,
+            false_positive_overlap DOUBLE,
+            capture_overlap DOUBLE,
+            detail_json VARCHAR,
+            PRIMARY KEY (date, market, factor_id)
         )
     """)
     con.execute("""
@@ -404,6 +425,135 @@ def _apply_sigreg_penalties(candidates: list[dict], market: str, prices: pd.Data
         )
 
     return penalized
+
+
+def _load_report_feedback(market: str) -> dict[str, dict[str, float]]:
+    if market == "cn":
+        candidates = [QUANT_CN_REPORT_DB, QUANT_CN_DB]
+    else:
+        candidates = [QUANT_US_DB, QUANT_US_REPORT_DB]
+
+    rows = []
+    for pipeline_db in candidates:
+        if not pipeline_db.exists():
+            continue
+        try:
+            con = duckdb.connect(str(pipeline_db), read_only=True)
+        except Exception as exc:
+            print(f"  Report feedback unavailable ({market}, {pipeline_db.name}): {exc}")
+            continue
+
+        try:
+            rows = con.execute("""
+                SELECT symbol, label, factor_feedback_action, factor_feedback_weight
+                FROM alpha_postmortem
+                WHERE evaluation_date >= CURRENT_DATE - INTERVAL '45 days'
+                  AND factor_feedback_action IS NOT NULL
+                  AND factor_feedback_weight IS NOT NULL
+            """).fetchall()
+            if rows:
+                break
+        except duckdb.Error:
+            rows = []
+        finally:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+    if not rows:
+        return {}
+
+    buckets: dict[str, dict[str, float]] = {
+        "missed_alpha": {},
+        "stale": {},
+        "false_positive": {},
+        "captured": {},
+    }
+    for symbol, label, action, weight in rows:
+        try:
+            w = float(weight)
+        except (TypeError, ValueError):
+            continue
+        if not symbol or w <= 0:
+            continue
+        if label == "missed_alpha" or action == "boost_recall":
+            buckets["missed_alpha"][symbol] = buckets["missed_alpha"].get(symbol, 0.0) + w
+        elif label in {"alpha_already_paid", "good_signal_bad_timing"} or action == "penalize_stale_chase":
+            buckets["stale"][symbol] = buckets["stale"].get(symbol, 0.0) + w
+        elif label == "false_positive" or action == "penalize_false_positive":
+            buckets["false_positive"][symbol] = buckets["false_positive"].get(symbol, 0.0) + w
+        elif label == "captured" or action == "reward_capture":
+            buckets["captured"][symbol] = buckets["captured"].get(symbol, 0.0) + w
+
+    total = sum(len(v) for v in buckets.values())
+    if total:
+        print(
+            "  Report feedback overlay: "
+            f"missed={len(buckets['missed_alpha'])}, "
+            f"stale={len(buckets['stale'])}, "
+            f"false_positive={len(buckets['false_positive'])}, "
+            f"captured={len(buckets['captured'])}"
+        )
+    return buckets
+
+
+def _feedback_overlap(symbols: list[str], weights: dict[str, float]) -> float:
+    if not symbols or not weights:
+        return 0.0
+    denom = max(1.0, len(symbols) / 5.0)
+    return round(sum(weights.get(sym, 0.0) for sym in symbols) / denom, 4)
+
+
+def _basket_symbols(latest_values: pd.Series, direction: str) -> list[str]:
+    if latest_values is None or len(latest_values) == 0:
+        return []
+    clean = latest_values.dropna()
+    if clean.empty:
+        return []
+
+    basket_n = max(10, min(50, int(len(clean) * 0.03)))
+    ranked = clean.sort_values(ascending=(direction == "short"))
+    return list(ranked.head(basket_n).index)
+
+
+def _apply_report_feedback(candidates: list[dict], market: str) -> list[dict]:
+    feedback = _load_report_feedback(market)
+    if not feedback:
+        return candidates
+
+    adjusted = []
+    for candidate in candidates:
+        latest_values = candidate.get("_latest_values")
+        basket = _basket_symbols(latest_values, candidate.get("direction", "long"))
+        missed_overlap = _feedback_overlap(basket, feedback.get("missed_alpha", {}))
+        stale_overlap = _feedback_overlap(basket, feedback.get("stale", {}))
+        false_overlap = _feedback_overlap(basket, feedback.get("false_positive", {}))
+        capture_overlap = _feedback_overlap(basket, feedback.get("captured", {}))
+
+        feedback_score = round(
+            1.30 * missed_overlap
+            + 0.35 * capture_overlap
+            - 0.75 * stale_overlap
+            - 1.00 * false_overlap,
+            4,
+        )
+        multiplier = float(np.clip(1.0 + 0.25 * feedback_score, 0.85, 1.20))
+        candidate["report_feedback_score"] = feedback_score
+        candidate["report_feedback_multiplier"] = round(multiplier, 4)
+        candidate["report_feedback_detail"] = {
+            "missed_alpha_overlap": missed_overlap,
+            "stale_overlap": stale_overlap,
+            "false_positive_overlap": false_overlap,
+            "capture_overlap": capture_overlap,
+            "basket_n": len(basket),
+        }
+        base_rank = candidate.get("rank_score", candidate["composite_score"])
+        candidate["rank_score"] = round(base_rank * multiplier, 6)
+        adjusted.append(candidate)
+
+    adjusted.sort(key=lambda r: r.get("rank_score", r["composite_score"]), reverse=True)
+    return adjusted
 
 
 def _refresh_promoted_factor(con: duckdb.DuckDBPyConnection, factor_id: str, candidate: dict) -> None:
@@ -707,6 +857,7 @@ def step2_multi_horizon_backtest(candidates: list[dict], market: str) -> list[di
             print(f"  {c['name']}: backtest error - {e}")
 
     enriched = _apply_sigreg_penalties(enriched, market, prices)
+    enriched = _apply_report_feedback(enriched, market)
     print(f"  Enriched: {len(enriched)} candidates with multi-horizon metrics")
     return enriched
 
@@ -725,6 +876,26 @@ def step3_select_and_promote(candidates: list[dict], market: str):
             INSERT OR REPLACE INTO daily_candidates (date, market, factor_id, formula, ic, ic_ir, mono, q5_q1, rank)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [today, market, c["factor_id"], c["formula"], c["ic"], c["ic_ir"], c["mono"], c["q5_q1"], i + 1])
+        if "report_feedback_score" in c:
+            con.execute("""
+                INSERT OR REPLACE INTO candidate_feedback (
+                    date, market, factor_id, feedback_score, feedback_multiplier,
+                    missed_alpha_overlap, stale_overlap, false_positive_overlap,
+                    capture_overlap, detail_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                today,
+                market,
+                c["factor_id"],
+                c.get("report_feedback_score"),
+                c.get("report_feedback_multiplier"),
+                (c.get("report_feedback_detail") or {}).get("missed_alpha_overlap"),
+                (c.get("report_feedback_detail") or {}).get("stale_overlap"),
+                (c.get("report_feedback_detail") or {}).get("false_positive_overlap"),
+                (c.get("report_feedback_detail") or {}).get("capture_overlap"),
+                json.dumps(c.get("report_feedback_detail") or {}, ensure_ascii=True),
+            ])
 
     existing_rows = con.execute("""
         SELECT factor_id, formula, status
