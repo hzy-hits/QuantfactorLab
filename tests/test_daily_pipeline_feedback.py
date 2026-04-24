@@ -97,6 +97,53 @@ class DailyPipelineFeedbackTests(unittest.TestCase):
         self.assertEqual(feedback["false_positive"], {"CCC": 0.7})
         self.assertEqual(feedback["captured"], {"DDD": 0.5})
 
+    def test_load_report_feedback_skips_observation_only_postmortem_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "pipeline.duckdb"
+            con = duckdb.connect(str(db_path))
+            con.execute(
+                """
+                CREATE TABLE algorithm_postmortem (
+                    symbol VARCHAR,
+                    label VARCHAR,
+                    evaluation_date DATE,
+                    feedback_action VARCHAR,
+                    feedback_weight DOUBLE,
+                    action_label VARCHAR,
+                    detail_json VARCHAR
+                )
+                """
+            )
+            con.executemany(
+                """
+                INSERT INTO algorithm_postmortem
+                VALUES (?, ?, CURRENT_DATE, ?, ?, ?, ?)
+                """,
+                [
+                    ("OBS1", "stale_chase", "penalize_stale_chase", 1.0, "OBSERVE", "{}"),
+                    (
+                        "OBS2",
+                        "false_positive_executable",
+                        "penalize_false_positive",
+                        1.0,
+                        "TRADE_NOW",
+                        '{"action_intent":"OBSERVE"}',
+                    ),
+                    ("TRADE", "won_and_executable", "reward_executable_capture", 0.5, "TRADE_NOW", "{}"),
+                ],
+            )
+            con.close()
+
+            with (
+                mock.patch.object(daily_pipeline, "QUANT_US_DB", db_path),
+                mock.patch.object(daily_pipeline, "QUANT_US_REPORT_DB", Path(tmpdir) / "none.duckdb"),
+            ):
+                feedback = daily_pipeline._load_report_feedback("us")
+
+        self.assertEqual(feedback["stale"], {})
+        self.assertEqual(feedback["false_positive"], {})
+        self.assertEqual(feedback["captured"], {"TRADE": 0.5})
+
     def test_report_feedback_records_shadow_alpha_overlap_aliases(self) -> None:
         candidate = {
             "factor_id": "demo",

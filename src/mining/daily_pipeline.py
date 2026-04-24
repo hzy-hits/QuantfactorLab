@@ -495,8 +495,12 @@ def _load_report_feedback(market: str) -> dict[str, dict[str, float]]:
             continue
 
         try:
-            rows = con.execute("""
-                SELECT symbol, label, feedback_action, feedback_weight
+            info = con.execute("PRAGMA table_info('algorithm_postmortem')").fetchall()
+            columns = {str(row[1]) for row in info}
+            action_expr = "action_label" if "action_label" in columns else "NULL AS action_label"
+            detail_expr = "detail_json" if "detail_json" in columns else "NULL AS detail_json"
+            rows = con.execute(f"""
+                SELECT symbol, label, feedback_action, feedback_weight, {action_expr}, {detail_expr}
                 FROM algorithm_postmortem
                 WHERE evaluation_date >= CURRENT_DATE - INTERVAL '45 days'
                   AND feedback_action IS NOT NULL
@@ -510,7 +514,8 @@ def _load_report_feedback(market: str) -> dict[str, dict[str, float]]:
 
         try:
             rows = con.execute("""
-                SELECT symbol, label, factor_feedback_action, factor_feedback_weight
+                SELECT symbol, label, factor_feedback_action, factor_feedback_weight,
+                       NULL AS action_label, NULL AS detail_json
                 FROM alpha_postmortem
                 WHERE evaluation_date >= CURRENT_DATE - INTERVAL '45 days'
                   AND factor_feedback_action IS NOT NULL
@@ -536,12 +541,23 @@ def _load_report_feedback(market: str) -> dict[str, dict[str, float]]:
         "false_positive": {},
         "captured": {},
     }
-    for symbol, label, action, weight in rows:
+    for symbol, label, action, weight, action_label, detail_json in rows:
         try:
             w = float(weight)
         except (TypeError, ValueError):
             continue
         if not symbol or w <= 0:
+            continue
+        detail = {}
+        if detail_json:
+            try:
+                parsed = json.loads(str(detail_json))
+                detail = parsed if isinstance(parsed, dict) else {}
+            except (TypeError, json.JSONDecodeError):
+                detail = {}
+        if str(action_label or "").upper() == "OBSERVE":
+            continue
+        if str(detail.get("action_intent") or "").upper() == "OBSERVE":
             continue
         if label == "missed_alpha" or action == "boost_recall":
             buckets["missed_alpha"][symbol] = buckets["missed_alpha"].get(symbol, 0.0) + w
