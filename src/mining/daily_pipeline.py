@@ -472,6 +472,7 @@ def _load_report_feedback(market: str) -> dict[str, dict[str, float]]:
         candidates = [QUANT_US_DB, QUANT_US_REPORT_DB]
 
     rows = []
+    source_table = None
     for pipeline_db in candidates:
         if not pipeline_db.exists():
             continue
@@ -483,6 +484,20 @@ def _load_report_feedback(market: str) -> dict[str, dict[str, float]]:
 
         try:
             rows = con.execute("""
+                SELECT symbol, label, feedback_action, feedback_weight
+                FROM algorithm_postmortem
+                WHERE evaluation_date >= CURRENT_DATE - INTERVAL '45 days'
+                  AND feedback_action IS NOT NULL
+                  AND feedback_weight IS NOT NULL
+            """).fetchall()
+            if rows:
+                source_table = "algorithm_postmortem"
+                break
+        except duckdb.Error:
+            rows = []
+
+        try:
+            rows = con.execute("""
                 SELECT symbol, label, factor_feedback_action, factor_feedback_weight
                 FROM alpha_postmortem
                 WHERE evaluation_date >= CURRENT_DATE - INTERVAL '45 days'
@@ -490,6 +505,7 @@ def _load_report_feedback(market: str) -> dict[str, dict[str, float]]:
                   AND factor_feedback_weight IS NOT NULL
             """).fetchall()
             if rows:
+                source_table = "alpha_postmortem"
                 break
         except duckdb.Error:
             rows = []
@@ -517,17 +533,32 @@ def _load_report_feedback(market: str) -> dict[str, dict[str, float]]:
             continue
         if label == "missed_alpha" or action == "boost_recall":
             buckets["missed_alpha"][symbol] = buckets["missed_alpha"].get(symbol, 0.0) + w
-        elif label in {"alpha_already_paid", "good_signal_bad_timing", "stale_chase"} or action == "penalize_stale_chase":
+        elif (
+            label
+            in {
+                "alpha_already_paid",
+                "good_signal_bad_timing",
+                "stale_chase",
+                "right_but_no_fill",
+            }
+            or action == "penalize_stale_chase"
+        ):
             buckets["stale"][symbol] = buckets["stale"].get(symbol, 0.0) + w
-        elif label == "false_positive" or action == "penalize_false_positive":
+        elif (
+            label in {"false_positive", "false_positive_executable", "wrong_way_executable"}
+            or action == "penalize_false_positive"
+        ):
             buckets["false_positive"][symbol] = buckets["false_positive"].get(symbol, 0.0) + w
-        elif label == "captured" or action == "reward_capture":
+        elif (
+            label in {"captured", "won_and_executable"}
+            or action in {"reward_capture", "reward_executable_capture"}
+        ):
             buckets["captured"][symbol] = buckets["captured"].get(symbol, 0.0) + w
 
     total = sum(len(v) for v in buckets.values())
     if total:
         print(
-            "  Report feedback overlay: "
+            f"  Report feedback overlay ({source_table or 'unknown'}): "
             f"missed={len(buckets['missed_alpha'])}, "
             f"stale={len(buckets['stale'])}, "
             f"false_positive={len(buckets['false_positive'])}, "

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import duckdb
 import pandas as pd
 
 
@@ -16,6 +18,46 @@ from src.mining import daily_pipeline
 
 
 class DailyPipelineFeedbackTests(unittest.TestCase):
+    def test_load_report_feedback_prefers_algorithm_postmortem_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "pipeline.duckdb"
+            con = duckdb.connect(str(db_path))
+            con.execute(
+                """
+                CREATE TABLE algorithm_postmortem (
+                    symbol VARCHAR,
+                    label VARCHAR,
+                    evaluation_date DATE,
+                    feedback_action VARCHAR,
+                    feedback_weight DOUBLE
+                )
+                """
+            )
+            con.executemany(
+                """
+                INSERT INTO algorithm_postmortem
+                VALUES (?, ?, CURRENT_DATE, ?, ?)
+                """,
+                [
+                    ("AAA", "missed_alpha", "boost_recall", 1.0),
+                    ("BBB", "right_but_no_fill", "penalize_stale_chase", 0.8),
+                    ("CCC", "false_positive_executable", "penalize_false_positive", 0.7),
+                    ("DDD", "won_and_executable", "reward_executable_capture", 0.5),
+                ],
+            )
+            con.close()
+
+            with (
+                mock.patch.object(daily_pipeline, "QUANT_US_DB", db_path),
+                mock.patch.object(daily_pipeline, "QUANT_US_REPORT_DB", Path(tmpdir) / "none.duckdb"),
+            ):
+                feedback = daily_pipeline._load_report_feedback("us")
+
+        self.assertEqual(feedback["missed_alpha"], {"AAA": 1.0})
+        self.assertEqual(feedback["stale"], {"BBB": 0.8})
+        self.assertEqual(feedback["false_positive"], {"CCC": 0.7})
+        self.assertEqual(feedback["captured"], {"DDD": 0.5})
+
     def test_report_feedback_records_shadow_alpha_overlap_aliases(self) -> None:
         candidate = {
             "factor_id": "demo",
