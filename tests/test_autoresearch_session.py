@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from src.autoresearch.session_state import ensure_session_files
+from src.agent.loop import FactorSession
 from src.agent.prompts import build_system_prompt
 
 
@@ -34,6 +35,41 @@ class AutoresearchSessionTests(unittest.TestCase):
         )
         self.assertIn("Resumable Session Context", prompt)
         self.assertIn("Try volume-stability families first.", prompt)
+
+    def test_summary_does_not_promote_oos_pass_that_checks_reverted(self) -> None:
+        session = FactorSession.__new__(FactorSession)
+        session.session_id = "test-session"
+        session.market = "cn"
+        session.budget = 3
+        session.branch_context = {"session_branch": "test-branch"}
+        session.experiments = [
+            {
+                "name": "reverted_oos_pass",
+                "formula": "rank(close)",
+                "is_ic": 0.04,
+                "is_ic_ir": 0.3,
+                "is_sharpe": 1.2,
+                "gates_passed": True,
+                "decision": "revert",
+            }
+        ]
+
+        summary = session._build_summary(
+            [
+                {
+                    "name": "reverted_oos_pass",
+                    "formula": "rank(close)",
+                    "is_ic": 0.04,
+                    "oos_pass": True,
+                    "decision": "revert",
+                }
+            ]
+        )
+
+        self.assertIn("Factors passing OOS: 1/1", summary)
+        self.assertIn("Factors kept after checks: 0/1", summary)
+        self.assertNotIn("Candidates for promotion:", summary)
+        self.assertNotIn("reverted_oos_pass (id=", summary)
 
 
 if __name__ == "__main__":

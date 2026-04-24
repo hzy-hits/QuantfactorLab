@@ -8,9 +8,13 @@ Replaces SigReg IC health check with physics-based tools:
 from __future__ import annotations
 
 import numpy as np
-import pywt
 from scipy.fft import fft, fftfreq
 from scipy.spatial.distance import pdist
+
+try:
+    import pywt
+except ModuleNotFoundError:  # pragma: no cover - depends on runtime image
+    pywt = None
 
 
 def wavelet_health(ic_series: np.ndarray, scales: list[int] | None = None,
@@ -27,6 +31,15 @@ def wavelet_health(ic_series: np.ndarray, scales: list[int] | None = None,
 
     if scales is None:
         scales = [3, 5, 10, 20, 40]
+
+    if pywt is None:
+        return {
+            "overall": "unavailable",
+            "reason": "PyWavelets missing; skipped wavelet energy check",
+            "scales": {},
+            "weakening_scales": 0,
+            "total_scales": len(scales),
+        }
 
     coeff, _ = pywt.cwt(ic, scales, "morl", sampling_period=1)
     energy = np.abs(coeff).mean(axis=1)
