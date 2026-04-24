@@ -15,9 +15,48 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.mining import daily_pipeline
+from src.mining import export_to_pipeline
 
 
 class DailyPipelineFeedbackTests(unittest.TestCase):
+    def test_short_direction_orients_factor_values_before_health_checks(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "ts_code": ["AAA", "BBB"],
+                "trade_date": pd.to_datetime(["2026-04-23", "2026-04-23"]),
+                "factor_value": [1.0, -2.0],
+            }
+        )
+
+        oriented = daily_pipeline._orient_factor_values_for_direction(raw, "short")
+
+        self.assertEqual(oriented["factor_value"].tolist(), [-1.0, 2.0])
+        self.assertEqual(raw["factor_value"].tolist(), [1.0, -2.0])
+
+    def test_export_short_direction_orients_rolling_factor_frame(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "ts_code": ["AAA", "BBB"],
+                "trade_date": pd.to_datetime(["2026-04-23", "2026-04-23"]),
+                "factor_value": [0.25, 0.75],
+            }
+        )
+
+        oriented = export_to_pipeline._orient_factor_values_for_direction(raw, "short")
+
+        self.assertEqual(oriented["factor_value"].tolist(), [-0.25, -0.75])
+        self.assertEqual(raw["factor_value"].tolist(), [0.25, 0.75])
+
+    def test_export_direction_uses_weighted_ic_before_stored_default(self) -> None:
+        self.assertEqual(
+            export_to_pipeline._resolve_direction("long", -0.04, -0.01, 0.01),
+            "short",
+        )
+        self.assertEqual(
+            export_to_pipeline._resolve_direction("short", 0.03, 0.01, -0.01),
+            "long",
+        )
+
     def test_load_report_feedback_prefers_algorithm_postmortem_labels(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "pipeline.duckdb"

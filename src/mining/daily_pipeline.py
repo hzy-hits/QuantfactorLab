@@ -226,6 +226,18 @@ def _infer_direction_from_horizons(horizon_metrics: dict[int, dict], fallback_ic
     return _infer_direction_from_ic(weighted_ic)
 
 
+def _orient_factor_values_for_direction(
+    factor_df: pd.DataFrame,
+    direction: str | None,
+) -> pd.DataFrame:
+    """Return factor values where positive IC means the stored direction still works."""
+    if (direction or "long").lower() != "short":
+        return factor_df
+    out = factor_df.copy()
+    out["factor_value"] = -out["factor_value"]
+    return out
+
+
 def _is_blacklisted_formula(formula: str) -> bool:
     """Filter out direct size/liquidity proxies that masquerade as alpha."""
     normalized = formula.replace(" ", "")
@@ -1051,7 +1063,7 @@ def step4_health_check(market: str):
 
     # Get all promoted + watchlist factors
     active = con.execute("""
-        SELECT factor_id, formula, status, health_watch_count
+        SELECT factor_id, formula, direction, status, health_watch_count
         FROM factor_registry
         WHERE market=? AND status IN ('promoted', 'watchlist')
     """, [market]).fetchall()
@@ -1082,10 +1094,11 @@ def step4_health_check(market: str):
     if market == "us":
         fwd = fwd.rename(columns={"symbol": "ts_code", "date": "trade_date"})
 
-    for factor_id, formula, status, watch_count in active:
+    for factor_id, formula, direction, status, watch_count in active:
         try:
             ast = parse(formula)
             factor_df = compute_factor(ast, prices, sym_col="ts_code", date_col="trade_date")
+            factor_df = _orient_factor_values_for_direction(factor_df, direction)
 
             # Last 20 trading days IC
             merged = factor_df.merge(
@@ -1121,9 +1134,10 @@ def step4_health_check(market: str):
             new_status = status
             new_watch = watch_count
             if status == "promoted":
-                # Use abs(IC) for health check: short factors have negative IC by design
+                # IC is computed after applying stored direction, so negative IC
+                # means the promoted factor has flipped against us.
                 reasons = []
-                if abs(rolling_ic) < HEALTH_WATCH_IC:
+                if rolling_ic < HEALTH_WATCH_IC:
                     reasons.append("IC too low")
                 if health_score < SIGREG_HEALTH_WATCH_SCORE:
                     reasons.append(f"SigReg health={health_score:.2f}")
@@ -1150,7 +1164,11 @@ def step4_health_check(market: str):
                     print(f"  ✅ {factor_id}: IC={rolling_ic:.4f}, health={health_score:.2f} healthy")
 
             elif status == "watchlist":
-                if abs(rolling_ic) >= HEALTH_RECOVER_IC and health_score >= SIGREG_HEALTH_RECOVER_SCORE and not regime_change:
+                if (
+                    rolling_ic >= HEALTH_RECOVER_IC
+                    and health_score >= SIGREG_HEALTH_RECOVER_SCORE
+                    and not regime_change
+                ):
                     new_status = "promoted"
                     new_watch = 0
                     print(

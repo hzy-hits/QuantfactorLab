@@ -111,6 +111,18 @@ def _resolve_direction(
     return direction if direction in {"long", "short"} else "long"
 
 
+def _orient_factor_values_for_direction(
+    factor_df: pd.DataFrame,
+    direction: str,
+) -> pd.DataFrame:
+    """Return factor values where higher values always mean better long candidates."""
+    if direction != "short":
+        return factor_df
+    out = factor_df.copy()
+    out["factor_value"] = -out["factor_value"]
+    return out
+
+
 def _resolve_effective_trade_date(prices: pd.DataFrame, requested_as_of: str) -> pd.Timestamp | None:
     """Use the latest available trade date on or before the requested report date."""
     if prices.empty:
@@ -293,8 +305,7 @@ def export(market: str, as_of: str | None = None):
             fdf = compute_factor(ast, prices, sym_col=sym_col, date_col=date_col)
             fdf = fdf[[sym_col, date_col, "factor_value"]].copy()
             effective_direction = _resolve_direction(direction, ic_7d, ic_14d, ic_30d)
-            if effective_direction == "short":
-                fdf["factor_value"] = -fdf["factor_value"]
+            fdf = _orient_factor_values_for_direction(fdf, effective_direction)
 
             # Filter to effective trade date, but write under requested report date.
             today_values = fdf[fdf[date_col] == effective_trade_date]
@@ -343,14 +354,13 @@ def export(market: str, as_of: str | None = None):
         fdf[date_col] = effective_trade_date
         # Merge with historical data for lookback evaluation
         full_fdf = None
-        for factor_id2, formula2, name2, *_ in promoted:
+        for factor_id2, formula2, name2, _score2, direction2, ic7_2, ic14_2, ic30_2 in promoted:
             if factor_id2 == fid:
                 try:
                     ast2 = parse(formula2)
                     full_fdf = compute_factor(ast2, prices, sym_col=sym_col, date_col=date_col)
-                    dir2 = _resolve_direction(*[r for r in [factor_id2, formula2, name2] + list(_[1:])][3:6])
-                    if dir2 == "short":
-                        full_fdf["factor_value"] = -full_fdf["factor_value"]
+                    dir2 = _resolve_direction(direction2, ic7_2, ic14_2, ic30_2)
+                    full_fdf = _orient_factor_values_for_direction(full_fdf, dir2)
                 except Exception:
                     pass
                 break
@@ -374,6 +384,9 @@ def export(market: str, as_of: str | None = None):
         factor_dfs_for_select, lookback_dates, strat_cfg.hold_max, date_col, strat_cfg.n_picks
     )
 
+    selected_factor_name = None
+    selected_side = None
+    selected_sharpe = None
     if best_factor is None:
         print("  No factor qualified in rolling selection, exporting zeros")
         composite = {sym: 0.0 for fv in factor_values.values() for sym in fv.index}
@@ -381,6 +394,9 @@ def export(market: str, as_of: str | None = None):
         # Get the factor name for logging
         factor_name_map = {fid: name for fid, formula, name, *_ in promoted}
         sel_name = factor_name_map.get(best_factor, best_factor)
+        selected_factor_name = sel_name
+        selected_side = best_side
+        selected_sharpe = round(float(best_sharpe), 4)
         print(f"  Selected: {sel_name} ({best_side}), lookback_sharpe={best_sharpe:.2f}")
 
         # Rank all stocks by this factor
@@ -467,8 +483,11 @@ def export(market: str, as_of: str | None = None):
             """, [as_of])
             for sym, val in composite.items():
                 detail = json.dumps({
-                    "method": "voting",
+                    "method": "rolling_best",
                     "factors": n_factors,
+                    "selected_factor": selected_factor_name,
+                    "selected_side": selected_side,
+                    "lookback_sharpe": selected_sharpe,
                     "trade_date": effective_trade_date.date().isoformat(),
                     **trade_params.get(sym, {}),
                 })
@@ -481,8 +500,11 @@ def export(market: str, as_of: str | None = None):
             """, [as_of])
             for sym, val in composite.items():
                 detail_json = json.dumps({
-                    "method": "voting",
+                    "method": "rolling_best",
                     "factors": n_factors,
+                    "selected_factor": selected_factor_name,
+                    "selected_side": selected_side,
+                    "lookback_sharpe": selected_sharpe,
                     "trade_date": effective_trade_date.date().isoformat(),
                     **trade_params.get(sym, {}),
                 })
