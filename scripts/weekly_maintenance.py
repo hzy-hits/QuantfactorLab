@@ -9,7 +9,7 @@ Usage:
     python scripts/weekly_maintenance.py --days 365   # backfill up to 365 days
 
 Cron:
-    17 10 * * 6 cd /home/ivena/coding/python/factor-lab && python3 scripts/weekly_maintenance.py >> logs/maintenance.log 2>&1
+    17 10 * * 6 cd $FACTOR_LAB_ROOT && python3 scripts/weekly_maintenance.py >> logs/maintenance.log 2>&1
 """
 import argparse
 import sys

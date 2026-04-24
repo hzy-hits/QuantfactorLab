@@ -141,6 +141,24 @@ uv run python eval_factor.py --market cn --formula "rank(delta(volume, 5))" \
 python -m src.agent.loop --market cn --budget 50 --output reports/session.md
 ```
 
+### Run Resumable Autoresearch Session
+
+```bash
+uv run python scripts/init_autoresearch_session.py --market us --goal "Improve US factor discovery"
+uv run python scripts/run_autoresearch_session.py --market us --time-budget-minutes 55
+uv run python scripts/export_autoresearch_dashboard.py --market us
+uv run python scripts/finalize_autoresearch_session.py --market us
+```
+
+This creates pi-autoresearch-style session artifacts under `runtime/autoresearch/<market>/`:
+
+- `autoresearch.md` — resumable session context
+- `autoresearch.sh` — benchmark harness that emits `METRIC ...` lines
+- `autoresearch.checks.sh` — post-benchmark checks
+- `autoresearch.jsonl` — append-only session run log
+- `reports/autoresearch_exports/<market>/dashboard.html` — static session dashboard
+- `reports/autoresearch_exports/finalized/...` — per-keep branch artifacts after finalize
+
 ### Daily Pipeline
 
 ```bash

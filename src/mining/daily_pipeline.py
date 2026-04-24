@@ -79,6 +79,12 @@ SIGREG_PENALTY_WEIGHTS = {
     "diversity": 0.20,
     "health": 0.35,
 }
+N_EFF_SHRINKAGE_FLOOR = 0.60
+RUN_AS_OF: str | None = None
+
+
+def current_as_of() -> str:
+    return RUN_AS_OF or date.today().isoformat()
 
 
 def init_db():
@@ -313,6 +319,29 @@ def _load_promoted_factor_snapshots(market: str, prices: pd.DataFrame) -> dict[s
     return snapshots
 
 
+def _effective_count_shrinkage(
+    n_effective: float | None,
+    n_total: float | None,
+    *,
+    floor: float = N_EFF_SHRINKAGE_FLOOR,
+) -> float:
+    try:
+        total = max(float(n_total or 0.0), 0.0)
+    except (TypeError, ValueError):
+        total = 0.0
+    if total <= 1.0:
+        return 1.0
+
+    try:
+        effective = float(n_effective or total)
+    except (TypeError, ValueError):
+        effective = total
+    effective = min(max(effective, 1.0), total)
+
+    shrink = float(np.sqrt(effective / total))
+    return round(float(np.clip(shrink, floor, 1.0)), 4)
+
+
 def _apply_sigreg_penalties(candidates: list[dict], market: str, prices: pd.DataFrame) -> list[dict]:
     if not candidates:
         return candidates
@@ -339,7 +368,7 @@ def _apply_sigreg_penalties(candidates: list[dict], market: str, prices: pd.Data
 
     penalized = []
     for candidate in candidates:
-        latest_values = candidate.pop("_latest_values", None)
+        latest_values = candidate.get("_latest_values")
         ic_series = np.asarray(candidate.pop("_ic_series", []), dtype=float)
         existing_snapshots = {
             fid: snap for fid, snap in promoted_snapshots.items() if fid != candidate["factor_id"]
@@ -401,10 +430,16 @@ def _apply_sigreg_penalties(candidates: list[dict], market: str, prices: pd.Data
             + SIGREG_PENALTY_WEIGHTS["health"] * health_penalty
         )
         multiplier = max(0.15, 1.0 - total_penalty)
+        n_eff = float(diversity_after.get("n_effective", len(existing_snapshots) + 1))
+        n_total = float(diversity_after.get("n_total", len(existing_snapshots) + 1))
+        n_eff_shrinkage = _effective_count_shrinkage(n_eff, n_total)
 
         candidate["sigreg_penalty"] = round(total_penalty, 3)
         candidate["sigreg_multiplier"] = round(multiplier, 3)
-        candidate["rank_score"] = round(candidate["composite_score"] * multiplier, 6)
+        candidate["sigreg_n_effective"] = round(n_eff, 2)
+        candidate["sigreg_n_total"] = round(n_total, 2)
+        candidate["sigreg_n_eff_shrinkage"] = n_eff_shrinkage
+        candidate["rank_score"] = round(candidate["composite_score"] * multiplier * n_eff_shrinkage, 6)
         candidate["sigreg_redundancy_r2"] = float(redundancy.get("r_squared", 0.0))
         candidate["sigreg_diversity_score"] = float(diversity_after.get("diversity_score", 1.0))
         candidate["sigreg_health_score"] = float(health.get("health_score", 0.5))
@@ -420,7 +455,10 @@ def _apply_sigreg_penalties(candidates: list[dict], market: str, prices: pd.Data
             f"rank={candidate.get('rank_score', candidate['composite_score']):.4f}, "
             f"R2={candidate.get('sigreg_redundancy_r2', 0.0):.3f}, "
             f"div={candidate.get('sigreg_diversity_score', 1.0):.3f}, "
-            f"health={candidate.get('sigreg_health_score', 0.5):.2f}"
+            f"health={candidate.get('sigreg_health_score', 0.5):.2f}, "
+            f"n_eff={candidate.get('sigreg_n_effective', 1.0):.1f}/"
+            f"{candidate.get('sigreg_n_total', 1.0):.1f}, "
+            f"shrink={candidate.get('sigreg_n_eff_shrinkage', 1.0):.3f}"
             + (" regime_change" if candidate.get("sigreg_regime_change") else "")
         )
 
@@ -479,7 +517,7 @@ def _load_report_feedback(market: str) -> dict[str, dict[str, float]]:
             continue
         if label == "missed_alpha" or action == "boost_recall":
             buckets["missed_alpha"][symbol] = buckets["missed_alpha"].get(symbol, 0.0) + w
-        elif label in {"alpha_already_paid", "good_signal_bad_timing"} or action == "penalize_stale_chase":
+        elif label in {"alpha_already_paid", "good_signal_bad_timing", "stale_chase"} or action == "penalize_stale_chase":
             buckets["stale"][symbol] = buckets["stale"].get(symbol, 0.0) + w
         elif label == "false_positive" or action == "penalize_false_positive":
             buckets["false_positive"][symbol] = buckets["false_positive"].get(symbol, 0.0) + w
@@ -538,15 +576,21 @@ def _apply_report_feedback(candidates: list[dict], market: str) -> list[dict]:
             - 1.00 * false_overlap,
             4,
         )
-        multiplier = float(np.clip(1.0 + 0.25 * feedback_score, 0.85, 1.20))
+        raw_multiplier = float(np.clip(1.0 + 0.25 * feedback_score, 0.85, 1.20))
+        n_eff_shrinkage = float(candidate.get("sigreg_n_eff_shrinkage", 1.0) or 1.0)
+        multiplier = float(np.clip(1.0 + (raw_multiplier - 1.0) * n_eff_shrinkage, 0.85, 1.20))
         candidate["report_feedback_score"] = feedback_score
+        candidate["report_feedback_multiplier_raw"] = round(raw_multiplier, 4)
         candidate["report_feedback_multiplier"] = round(multiplier, 4)
         candidate["report_feedback_detail"] = {
             "missed_alpha_overlap": missed_overlap,
+            "stale_chase_overlap": stale_overlap,
             "stale_overlap": stale_overlap,
             "false_positive_overlap": false_overlap,
+            "captured_overlap": capture_overlap,
             "capture_overlap": capture_overlap,
             "basket_n": len(basket),
+            "n_eff_shrinkage": round(n_eff_shrinkage, 4),
         }
         base_rank = candidate.get("rank_score", candidate["composite_score"])
         candidate["rank_score"] = round(base_rank * multiplier, 6)
@@ -619,7 +663,7 @@ def _save_factor_weights(market: str, weights: dict[str, float]) -> None:
 
     init_db()
     con = duckdb.connect(FACTOR_LAB_DB)
-    as_of = date.today().isoformat()
+    as_of = current_as_of()
     for factor_id, weight in weights.items():
         con.execute("""
             INSERT OR REPLACE INTO factor_weights (as_of, market, factor_id, weight, source)
@@ -634,7 +678,7 @@ def _log_pipeline_run(market: str, stage: str, candidate_count: int, note: str =
     con.execute("""
         INSERT OR REPLACE INTO pipeline_runs (as_of, market, stage, candidate_count, note)
         VALUES (?, ?, ?, ?, ?)
-    """, [date.today().isoformat(), market, stage, int(candidate_count), note])
+    """, [current_as_of(), market, stage, int(candidate_count), note])
     con.close()
 
 
@@ -868,7 +912,10 @@ def step3_select_and_promote(candidates: list[dict], market: str):
 
     init_db()
     con = duckdb.connect(FACTOR_LAB_DB)
-    today = date.today().isoformat()
+    today = current_as_of()
+
+    con.execute("DELETE FROM daily_candidates WHERE date=? AND market=?", [today, market])
+    con.execute("DELETE FROM candidate_feedback WHERE date=? AND market=?", [today, market])
 
     # Save all candidates to daily_candidates
     for i, c in enumerate(candidates):
@@ -968,7 +1015,7 @@ def step4_health_check(market: str):
     init_db()
     con = duckdb.connect(FACTOR_LAB_DB)
     cfg = CONFIGS[market]
-    today = date.today().isoformat()
+    today = current_as_of()
     from src.evaluate.sigreg import ic_health_test
 
     # Get all promoted + watchlist factors
@@ -1124,11 +1171,21 @@ def step4_health_check(market: str):
     con.close()
 
 
-def run(market: str, skip_mine: bool = False, max_factors: int = 500, use_agent: bool = True):
+def run(
+    market: str,
+    skip_mine: bool = False,
+    max_factors: int = 500,
+    use_agent: bool = True,
+    as_of: str | None = None,
+):
     """Run the full daily factor pipeline."""
+    global RUN_AS_OF
+    RUN_AS_OF = as_of
+
     print(f"{'='*60}")
     print(f"  Daily Factor Pipeline — {market.upper()}")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  As-of: {current_as_of()}")
     print(f"{'='*60}")
 
     init_db()
@@ -1205,7 +1262,7 @@ def run(market: str, skip_mine: bool = False, max_factors: int = 500, use_agent:
 
                     # Save commentary to file for pipeline to read
                     commentary_path = Path(f"data/{market}_factor_commentary.txt")
-                    commentary_path.write_text(commentary)
+                    commentary_path.write_text(commentary, encoding="utf-8")
         except Exception as e:
             print(f"\n[5/5] Agent selection skipped: {e}")
 
@@ -1233,8 +1290,9 @@ def main():
     parser.add_argument("--skip-mine", action="store_true", help="Skip mining, only health check")
     parser.add_argument("--max-factors", type=int, default=500)
     parser.add_argument("--no-agent", action="store_true", help="Skip agent review/selection")
+    parser.add_argument("--date", "--as-of", dest="as_of", type=str, default=None, help="As-of date YYYY-MM-DD")
     args = parser.parse_args()
-    run(args.market, args.skip_mine, args.max_factors, use_agent=not args.no_agent)
+    run(args.market, args.skip_mine, args.max_factors, use_agent=not args.no_agent, as_of=args.as_of)
 
 
 if __name__ == "__main__":

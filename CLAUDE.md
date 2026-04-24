@@ -9,12 +9,12 @@ AI-assisted quantitative factor mining. Agents propose factor hypotheses → sys
 ## Project Locations
 
 ```
-This project:     /home/ivena/coding/python/factor-lab/
-US pipeline:      /home/ivena/coding/python/quant-research-v1/
-CN pipeline:      /home/ivena/coding/rust/quant-research-cn/
-US data (read):   /home/ivena/coding/python/quant-research-v1/data/quant.duckdb
-CN data (read):   /home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb
-Own data:         /home/ivena/coding/python/factor-lab/data/factor_lab.duckdb
+This project:     $FACTOR_LAB_ROOT   (auto-detected from src/paths.py)
+US pipeline:      $QUANT_US_ROOT     (sibling repo quant-research-v1)
+CN pipeline:      $QUANT_CN_ROOT     (sibling repo quant-research-cn)
+US data (read):   $QUANT_US_ROOT/data/quant.duckdb
+CN data (read):   $QUANT_CN_ROOT/data/quant_cn.duckdb
+Own data:         $FACTOR_LAB_ROOT/data/factor_lab.duckdb
 ```
 
 ## Core Philosophy (NON-NEGOTIABLE)

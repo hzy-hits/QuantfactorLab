@@ -26,6 +26,7 @@ FACTOR_LAB_DB = FACTOR_LAB_DIR / "data" / "factor_lab.duckdb"
 EXPERIMENTS_FILE = FACTOR_LAB_DIR / "experiments.jsonl"
 JOURNAL_FILE = FACTOR_LAB_DIR / "research_journal.md"
 REPORTS_DIR = FACTOR_LAB_DIR / "reports"
+RUNTIME_AUTORESEARCH_DIR = FACTOR_LAB_DIR / "runtime" / "autoresearch"
 
 
 def load_experiments(target_date: str) -> list[dict]:
@@ -43,9 +44,30 @@ def load_experiments(target_date: str) -> list[dict]:
             except json.JSONDecodeError:
                 continue
 
+    experiments.extend(_load_experiments_from_runtime_logs(target_date))
+
     fallback = _load_experiments_from_reports(target_date)
     if fallback and len(fallback) > len(experiments):
         return fallback
+    return experiments
+
+
+def _load_experiments_from_runtime_logs(target_date: str) -> list[dict]:
+    experiments: list[dict] = []
+    if not RUNTIME_AUTORESEARCH_DIR.exists():
+        return experiments
+
+    for log_path in sorted(RUNTIME_AUTORESEARCH_DIR.glob("*/autoresearch.jsonl")):
+        for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts = entry.get("ts", "")
+            if ts.startswith(target_date):
+                experiments.append(entry)
     return experiments
 
 

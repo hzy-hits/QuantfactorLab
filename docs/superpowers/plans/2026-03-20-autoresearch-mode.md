@@ -59,8 +59,9 @@ from src.backtest.gates import check_gates, GateResult
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-FACTOR_LAB_DB = "/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb"
-CACHE_DIR = Path("/home/ivena/coding/python/factor-lab/data/.cache")
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FACTOR_LAB_DB = str(_PROJECT_ROOT / "data" / "factor_lab.duckdb")
+CACHE_DIR = _PROJECT_ROOT / "data" / ".cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
@@ -68,7 +69,7 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 MARKET_CONFIGS = {
     "cn": {
-        "db_path": "/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb",
+        "db_path": "$QUANT_CN_ROOT/data/quant_cn.duckdb",
         "table": "prices",
         "sym_col": "ts_code",
         "date_col": "trade_date",
@@ -78,7 +79,7 @@ MARKET_CONFIGS = {
         "oos_start": "2025-10-01",
     },
     "us": {
-        "db_path": "/home/ivena/coding/python/quant-research-v1/data/quant.duckdb",
+        "db_path": "$QUANT_US_ROOT/data/quant.duckdb",
         "table": "prices_daily",
         "sym_col": "symbol",
         "date_col": "date",
@@ -571,7 +572,7 @@ if __name__ == "__main__":
 
 Run:
 ```bash
-cd /home/ivena/coding/python/factor-lab && uv run python eval_factor.py --market cn --formula "rank(delta(volume, 5))" 2>&1
+cd $FACTOR_LAB_ROOT && uv run python eval_factor.py --market cn --formula "rank(delta(volume, 5))" 2>&1
 ```
 
 Expected: grep-friendly output with `is_ic:`, `gates:`, etc. or a clear error message.
@@ -580,7 +581,7 @@ Expected: grep-friendly output with `is_ic:`, `gates:`, etc. or a clear error me
 
 Run:
 ```bash
-cd /home/ivena/coding/python/factor-lab && uv run python eval_factor.py --market us --formula "rank(delta(volume, 5))" 2>&1
+cd $FACTOR_LAB_ROOT && uv run python eval_factor.py --market us --formula "rank(delta(volume, 5))" 2>&1
 ```
 
 Expected: output with different metrics (US has stricter gates).
@@ -589,7 +590,7 @@ Expected: output with different metrics (US has stricter gates).
 
 Run:
 ```bash
-cd /home/ivena/coding/python/factor-lab && uv run python eval_factor.py --market cn --formula "invalid(((" 2>&1; echo "exit=$?"
+cd $FACTOR_LAB_ROOT && uv run python eval_factor.py --market cn --formula "invalid(((" 2>&1; echo "exit=$?"
 ```
 
 Expected: stderr with `PARSE_ERROR:`, exit code 1.
@@ -598,7 +599,7 @@ Expected: stderr with `PARSE_ERROR:`, exit code 1.
 
 Run:
 ```bash
-cd /home/ivena/coding/python/factor-lab && uv run python eval_factor.py --market cn --formula "rank(nonexistent_feature)" 2>&1; echo "exit=$?"
+cd $FACTOR_LAB_ROOT && uv run python eval_factor.py --market cn --formula "rank(nonexistent_feature)" 2>&1; echo "exit=$?"
 ```
 
 Expected: stderr with `COMPUTE_ERROR:`, exit code 2.
@@ -607,7 +608,7 @@ Expected: stderr with `COMPUTE_ERROR:`, exit code 2.
 
 Run:
 ```bash
-cd /home/ivena/coding/python/factor-lab && uv run python eval_factor.py --market cn --formula "rank(delta(volume, 5))" --oos-check 2>&1
+cd $FACTOR_LAB_ROOT && uv run python eval_factor.py --market cn --formula "rank(delta(volume, 5))" --oos-check 2>&1
 ```
 
 Expected: output includes `oos_result: PASS` or `FAIL` or `SKIP`.
@@ -616,7 +617,7 @@ Expected: output includes `oos_result: PASS` or `FAIL` or `SKIP`.
 
 Run:
 ```bash
-cd /home/ivena/coding/python/factor-lab && uv run python eval_factor.py --show-registry --market cn 2>&1
+cd $FACTOR_LAB_ROOT && uv run python eval_factor.py --show-registry --market cn 2>&1
 ```
 
 Expected: list of promoted factors or "empty".
@@ -625,7 +626,7 @@ Expected: list of promoted factors or "empty".
 
 Run:
 ```bash
-cd /home/ivena/coding/python/factor-lab && uv run python eval_factor.py --eval-composite --market cn 2>&1
+cd $FACTOR_LAB_ROOT && uv run python eval_factor.py --eval-composite --market cn 2>&1
 ```
 
 Expected: composite IC/IR metrics or "no promoted factors".
@@ -641,7 +642,7 @@ Debug and fix based on test results. Common issues:
 
 Run:
 ```bash
-cd /home/ivena/coding/python/factor-lab && uv run python eval_factor.py \
+cd $FACTOR_LAB_ROOT && uv run python eval_factor.py \
   --market cn \
   --formula "rank(delta(volume, 5))" \
   --name "test_volume_delta" \
@@ -652,7 +653,7 @@ cd /home/ivena/coding/python/factor-lab && uv run python eval_factor.py \
 
 Then verify:
 ```bash
-cd /home/ivena/coding/python/factor-lab && python -c "
+cd $FACTOR_LAB_ROOT && python -c "
 import duckdb
 con = duckdb.connect('data/factor_lab.duckdb', read_only=True)
 print(con.execute(\"SELECT name, formula, status FROM factor_registry WHERE name='test_volume_delta'\").fetchdf())
@@ -663,7 +664,7 @@ con.close()
 - [ ] **Step 11: Commit**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 git add eval_factor.py
 git commit -m "feat: add eval_factor.py CLI for autoresearch mode"
 ```
@@ -800,7 +801,7 @@ Read through and check all commands are correct.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 git add program.md
 git commit -m "feat: add program.md for Claude Code autonomous mining"
 ```
@@ -863,7 +864,7 @@ vwap           |       |         |         |        |      |        |
 - [ ] **Step 2: Commit**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 git add research_journal.md
 git commit -m "feat: add research_journal.md template for cross-session memory"
 ```
@@ -877,7 +878,7 @@ Run the full autoresearch workflow manually to verify everything works together.
 - [ ] **Step 1: Test the full experiment cycle — CN market**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 
 # IS evaluation
 uv run python eval_factor.py --market cn --formula "rank(delta(volume, 5) / ts_mean(volume, 20))" > run.log 2>&1
@@ -895,7 +896,7 @@ grep -q "^gates:.*PASS" run.log && \
 - [ ] **Step 2: Test the full experiment cycle — US market**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 
 uv run python eval_factor.py --market us --formula "rank(pct_change(volume, 5))" > run.log 2>&1
 echo "=== IS Results ==="
@@ -905,7 +906,7 @@ cat run.log
 - [ ] **Step 3: Test correlation gate — run two similar formulas**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 
 # First: promote a factor
 uv run python eval_factor.py --market cn \
@@ -920,14 +921,14 @@ uv run python eval_factor.py --market cn \
 - [ ] **Step 4: Test composite evaluation**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 uv run python eval_factor.py --eval-composite --market cn 2>&1
 ```
 
 - [ ] **Step 5: Verify experiments.jsonl can be written**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 echo '{"ts":"2026-03-20T00:00:00","n":0,"market":"cn","formula":"test","status":"smoke_test"}' > experiments.jsonl
 cat experiments.jsonl
 ```
@@ -936,7 +937,7 @@ cat experiments.jsonl
 
 Remove test factor from registry if it shouldn't persist:
 ```bash
-cd /home/ivena/coding/python/factor-lab && python -c "
+cd $FACTOR_LAB_ROOT && python -c "
 import duckdb
 con = duckdb.connect('data/factor_lab.duckdb')
 con.execute(\"DELETE FROM factor_registry WHERE name='test_volume_delta' OR name='vol_delta_5'\")
@@ -948,7 +949,7 @@ print('cleaned up test factors')
 - [ ] **Step 7: Final commit**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 git add experiments.jsonl research_journal.md
 git commit -m "feat: autoresearch mode ready — eval_factor.py + program.md + journal"
 ```
@@ -1182,7 +1183,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: Test with mock data**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 
 # Generate report for today (uses whatever experiments.jsonl + registry has)
 uv run python scripts/generate_factor_report.py --date 2026-03-20
@@ -1193,7 +1194,7 @@ Expected: markdown section output to stdout (or "No Factor Lab data" if no exper
 - [ ] **Step 3: Test append mode with a temp file**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 
 echo "# Test Report" > /tmp/test_report.md
 echo "Some existing content." >> /tmp/test_report.md
@@ -1206,7 +1207,7 @@ Expected: original content + Factor Lab section appended.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 git add scripts/generate_factor_report.py
 git commit -m "feat: add generate_factor_report.py for pipeline report injection"
 ```
@@ -1218,8 +1219,8 @@ git commit -m "feat: add generate_factor_report.py for pipeline report injection
 Add a single call to each pipeline's report generation script to append the Factor Lab section.
 
 **Files:**
-- Modify: `/home/ivena/coding/python/quant-research-v1/scripts/run_agents.sh` (~line 513)
-- Modify: `/home/ivena/coding/rust/quant-research-cn/scripts/run_agents.sh` (~line 420)
+- Modify: `$QUANT_US_ROOT/scripts/run_agents.sh` (~line 513)
+- Modify: `$QUANT_CN_ROOT/scripts/run_agents.sh` (~line 420)
 
 - [ ] **Step 1: Read the exact injection points in both files**
 
@@ -1230,12 +1231,12 @@ CN: Find where report is finalized (after merge agent writes, before email check
 
 - [ ] **Step 2: Add Factor Lab section to US pipeline**
 
-In `/home/ivena/coding/python/quant-research-v1/scripts/run_agents.sh`, after the report is finalized (the line that copies/creates `$ZH_REPORT`), add:
+In `$QUANT_US_ROOT/scripts/run_agents.sh`, after the report is finalized (the line that copies/creates `$ZH_REPORT`), add:
 
 ```bash
 # Append Factor Lab experiment report section
 echo "  Appending Factor Lab section..."
-cd /home/ivena/coding/python/factor-lab && \
+cd $FACTOR_LAB_ROOT && \
   uv run python scripts/generate_factor_report.py \
     --date "$DATE" \
     --append-to "$ZH_REPORT" 2>/dev/null || true
@@ -1246,12 +1247,12 @@ The `|| true` ensures the pipeline continues even if factor-lab has no data or e
 
 - [ ] **Step 3: Add Factor Lab section to CN pipeline**
 
-In `/home/ivena/coding/rust/quant-research-cn/scripts/run_agents.sh`, after the report is finalized, add the same call:
+In `$QUANT_CN_ROOT/scripts/run_agents.sh`, after the report is finalized, add the same call:
 
 ```bash
 # Append Factor Lab experiment report section
 echo "  Appending Factor Lab section..."
-cd /home/ivena/coding/python/factor-lab && \
+cd $FACTOR_LAB_ROOT && \
   uv run python scripts/generate_factor_report.py \
     --date "$DATE" \
     --append-to "$REPORT_FILE" 2>/dev/null || true
@@ -1268,7 +1269,7 @@ echo "# US Daily Report $DATE" > "$MOCK_REPORT"
 echo "## Market Summary" >> "$MOCK_REPORT"
 echo "Test content..." >> "$MOCK_REPORT"
 
-cd /home/ivena/coding/python/factor-lab && \
+cd $FACTOR_LAB_ROOT && \
   uv run python scripts/generate_factor_report.py \
     --date "$DATE" \
     --append-to "$MOCK_REPORT" 2>&1
@@ -1279,11 +1280,11 @@ cat "$MOCK_REPORT"
 - [ ] **Step 5: Commit changes to both pipelines**
 
 ```bash
-cd /home/ivena/coding/python/quant-research-v1
+cd $QUANT_US_ROOT
 git add scripts/run_agents.sh
 git commit -m "feat: append Factor Lab section to daily reports"
 
-cd /home/ivena/coding/rust/quant-research-cn
+cd $QUANT_CN_ROOT
 git add scripts/run_agents.sh
 git commit -m "feat: append Factor Lab section to daily reports"
 ```
@@ -1291,7 +1292,7 @@ git commit -m "feat: append Factor Lab section to daily reports"
 - [ ] **Step 6: Add .gitignore entries for cache**
 
 ```bash
-cd /home/ivena/coding/python/factor-lab
+cd $FACTOR_LAB_ROOT
 echo "data/.cache/" >> .gitignore
 echo "*.pkl" >> .gitignore
 git add .gitignore

@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import argparse
+import re
 import time
 
 import duckdb
@@ -22,8 +23,52 @@ import pandas as pd
 from src.dsl.parser import parse
 from src.dsl.compute import compute_factor
 from src.market_data import load_market_prices
-from src.paths import FACTOR_LAB_DB, QUANT_CN_DB
+from src.paths import FACTOR_LAB_DB, QUANT_CN_DB, QUANT_US_DB
 from src.strategy.rolling_best import StrategyConfig, backtest, select_best_factor
+
+
+US_ALLOWED_SECURITY_TYPES = {
+    "Common Stock",
+    "ADR",
+    "REIT",
+    "PUBLIC",
+    "Foreign Sh.",
+    "NVDR",
+    "GDR",
+    "MLP",
+    "Ltd Part",
+    "CDI",
+    "NY Reg Shrs",
+}
+US_RECENT_WINDOW = 60
+US_HISTORY_WINDOW = 252
+US_MAX_ATR_PCT = 0.45
+US_MAX_CLOSE_JUMP_RATIO = 3.0
+US_MEDIAN_RATIO_LOW = 0.33
+US_MEDIAN_RATIO_HIGH = 3.0
+US_STOP_FLOOR_PCT = 0.85
+US_BLOCKED_SYMBOL_RE = re.compile(r"[=\^]")
+CN_BLOCKED_PREFIXES = ("688", "920", "830", "870")
+
+FILTER_REASON_LABELS = {
+    "missing_metadata": "缺少证券元数据",
+    "non_equity_symbol": "代码不是股票/ADR",
+    "unsupported_type": "证券类型不支持",
+    "invalid_close": "收盘价无效",
+    "invalid_atr": "ATR 无效",
+    "atr_too_wide": "ATR/价格过大",
+    "price_regime_break": "价格中枢断层",
+    "price_gap_break": "价格跳变异常",
+    "cn_untradable_board": "当前账户不可交易板块",
+}
+
+
+def is_cn_tradable_symbol(sym: str) -> bool:
+    text = str(sym).upper()
+    code = text.split(".")[0]
+    if text.endswith(".BJ"):
+        return False
+    return not code.startswith(CN_BLOCKED_PREFIXES)
 
 
 def load_data(market: str):
@@ -31,6 +76,9 @@ def load_data(market: str):
 
     sym_col = "ts_code" if market == "cn" else "symbol"
     date_col = "trade_date" if market == "cn" else "date"
+
+    if market == "cn":
+        prices = prices[prices[sym_col].map(is_cn_tradable_symbol)].copy()
 
     prices = prices.sort_values([sym_col, date_col])
     prices["ret_next"] = prices.groupby(sym_col)["close"].transform(
@@ -77,6 +125,135 @@ def _resolve_effective_trade_date(
     if eligible.empty:
         raise ValueError(f"No trade_date <= {as_of}")
     return pd.Timestamp(eligible[-1]), requested_ts
+
+
+def _load_us_symbol_metadata() -> dict[str, dict[str, str]]:
+    try:
+        con = duckdb.connect(str(QUANT_US_DB), read_only=True)
+        try:
+            df = con.execute(
+                """
+                SELECT symbol,
+                       COALESCE(name, symbol) AS name,
+                       COALESCE(type, '') AS type,
+                       COALESCE(exchange, '') AS exchange
+                FROM us_symbols
+                """
+            ).fetchdf()
+        finally:
+            con.close()
+    except Exception:
+        return {}
+
+    return {
+        str(row["symbol"]): {
+            "name": str(row["name"] or row["symbol"]),
+            "type": str(row["type"] or ""),
+            "exchange": str(row["exchange"] or ""),
+        }
+        for _, row in df.iterrows()
+    }
+
+
+def _build_us_quality_gate(
+    prices: pd.DataFrame,
+    sym_col: str,
+    date_col: str,
+    latest: pd.Timestamp,
+) -> dict[str, dict[str, object]]:
+    df = prices.sort_values([sym_col, date_col]).copy()
+    df["prev_close"] = df.groupby(sym_col)["close"].shift(1)
+    df["tr"] = np.maximum(
+        df["high"] - df["low"],
+        np.maximum(
+            abs(df["high"] - df["prev_close"]),
+            abs(df["low"] - df["prev_close"]),
+        ),
+    )
+    df["atr"] = df.groupby(sym_col)["tr"].transform(
+        lambda s: s.rolling(14, min_periods=5).mean()
+    )
+
+    quality: dict[str, dict[str, object]] = {}
+    for sym, hist in df.groupby(sym_col, sort=False):
+        hist = hist[hist[date_col] <= latest].tail(US_HISTORY_WINDOW).copy()
+        if hist.empty:
+            continue
+
+        close = float(hist.iloc[-1]["close"])
+        atr = hist.iloc[-1]["atr"]
+        if pd.isna(atr) or atr <= 0:
+            atr = close * 0.03 if close > 0 else np.nan
+        atr = float(atr) if pd.notna(atr) else np.nan
+        atr_pct = atr / close if close > 0 and np.isfinite(atr) else np.nan
+
+        recent = hist.tail(min(len(hist), US_RECENT_WINDOW))
+        hist_median = float(hist["close"].median()) if not hist.empty else np.nan
+        recent_median = float(recent["close"].median()) if not recent.empty else np.nan
+        median_ratio = (
+            recent_median / hist_median
+            if np.isfinite(hist_median) and hist_median > 0
+            else np.nan
+        )
+
+        jumps = (
+            hist["close"] / hist["prev_close"]
+        ).replace([np.inf, -np.inf], np.nan).dropna()
+        max_jump_ratio = 1.0
+        if not jumps.empty:
+            up_jump = float(jumps.max())
+            down_jump = float(jumps.min())
+            if down_jump > 0:
+                max_jump_ratio = max(up_jump, 1.0 / down_jump)
+            else:
+                max_jump_ratio = up_jump
+
+        reasons: list[str] = []
+        if not np.isfinite(close) or close <= 0:
+            reasons.append("invalid_close")
+        if not np.isfinite(atr) or atr <= 0:
+            reasons.append("invalid_atr")
+        if np.isfinite(atr_pct) and atr_pct > US_MAX_ATR_PCT:
+            reasons.append("atr_too_wide")
+        if np.isfinite(median_ratio) and (
+            median_ratio < US_MEDIAN_RATIO_LOW or median_ratio > US_MEDIAN_RATIO_HIGH
+        ):
+            reasons.append("price_regime_break")
+        if np.isfinite(max_jump_ratio) and max_jump_ratio > US_MAX_CLOSE_JUMP_RATIO:
+            reasons.append("price_gap_break")
+
+        quality[str(sym)] = {
+            "close": close,
+            "atr": atr,
+            "atr_pct": float(atr_pct) if np.isfinite(atr_pct) else np.nan,
+            "median_ratio": float(median_ratio) if np.isfinite(median_ratio) else np.nan,
+            "max_jump_ratio": float(max_jump_ratio) if np.isfinite(max_jump_ratio) else np.nan,
+            "reasons": reasons,
+        }
+
+    return quality
+
+
+def _format_filter_reason(code: str) -> str:
+    return FILTER_REASON_LABELS.get(code, code)
+
+
+def _us_rejection_reason(
+    sym: str,
+    metadata: dict[str, str] | None,
+    quality: dict[str, object] | None,
+) -> str | None:
+    if US_BLOCKED_SYMBOL_RE.search(sym):
+        return _format_filter_reason("non_equity_symbol")
+    if metadata is None:
+        return _format_filter_reason("missing_metadata")
+    if metadata.get("type", "") not in US_ALLOWED_SECURITY_TYPES:
+        return f"{_format_filter_reason('unsupported_type')}: {metadata.get('type') or 'unknown'}"
+    if quality:
+        reasons = quality.get("reasons") or []
+        if reasons:
+            return " / ".join(_format_filter_reason(str(reason)) for reason in reasons)
+    return None
 
 
 def run_backtest(market: str, cfg: StrategyConfig):
@@ -159,7 +336,7 @@ def run_backtest(market: str, cfg: StrategyConfig):
 
 
 def show_today(market: str, cfg: StrategyConfig, as_of: str | None = None):
-    """Output actionable trading instructions."""
+    """Output research candidates for the report pipeline, not standalone orders."""
     prices, all_factors, sym_col, date_col = load_data(market)
     trade_dates = pd.Index(pd.to_datetime(prices[date_col], errors="coerce").dropna().unique()).sort_values()
     latest, requested_ts = _resolve_effective_trade_date(prices, date_col, as_of)
@@ -182,11 +359,14 @@ def show_today(market: str, cfg: StrategyConfig, as_of: str | None = None):
 
     fdata = all_factors[factor_name]
     today = fdata[fdata[date_col] == latest].dropna(subset=["factor_value"])
+    candidate_limit = cfg.n_picks
+    if market == "us":
+        candidate_limit = min(len(today), max(cfg.n_picks * 5, 25))
 
     if side == "top":
-        picks = today.nlargest(cfg.n_picks, "factor_value")
+        picks = today.nlargest(candidate_limit, "factor_value")
     else:
-        picks = today.nsmallest(cfg.n_picks, "factor_value")
+        picks = today.nsmallest(candidate_limit, "factor_value")
 
     today_prices = prices[prices[date_col] == latest].set_index(sym_col)
 
@@ -229,6 +409,11 @@ def show_today(market: str, cfg: StrategyConfig, as_of: str | None = None):
             _con.close()
         except Exception:
             pass
+        us_metadata = {}
+        us_quality = {}
+    else:
+        us_metadata = _load_us_symbol_metadata()
+        us_quality = _build_us_quality_gate(prices, sym_col, date_col, latest)
 
     label = "A股" if market == "cn" else "美股"
 
@@ -281,27 +466,43 @@ def show_today(market: str, cfg: StrategyConfig, as_of: str | None = None):
         print(f"{'═'*70}")
         return
 
-    # Simple, direct language
+    # Keep Factor Lab subordinate to the main report/execution gate.
     side_note = "因子值最高" if side == "top" else "因子值最低"
-    print(f"  策略: 买入 {side_note} 的 {cfg.n_picks} 只股票")
-    print(f"  依据: {factor_name}")
-    print(f"  状态: {w_icon} {'正常' if w_action == 'HOLD' else '注意衰减信号'}")
+    print(f"  类型: Factor Lab 研究候选，不是独立交易指令")
+    print(f"  筛选: {side_note} 的 {cfg.n_picks} 只股票")
+    print(f"  因子: {factor_name}")
+    print(f"  健康: {w_icon} {'正常' if w_action == 'HOLD' else '注意衰减信号'}")
     print(f"")
-    print(f"  怎么操作:")
-    print(f"    1. 明天开盘买入下面 {cfg.n_picks} 只")
-    print(f"    2. 持有 {actual_hold} 个交易日 (到 ~{exit_date} 全卖)")
-    print(f"    3. 每天看一眼: 跌破止损价 → 第二天开盘卖掉那只")
-    print(f"    4. 涨到止盈价 → 第二天开盘卖掉那只")
+    print(f"  使用方式:")
+    print(f"    1. 只作为主系统的召回/对照候选")
+    print(f"    2. 必须再通过主报告方向、执行 gate、流动性和追价过滤")
+    print(f"    3. 未通过主系统时，最多进入观察/轮动池")
+    print(f"    4. 参考持有窗口 {actual_hold} 个交易日，到 ~{exit_date} 复核")
     if market == "cn":
-        print(f"    5. 买入当天不能卖 (T+1)")
+        print(f"    5. 已剔除科创板和北交所等当前不可交易板块")
+    else:
+        print(f"    5. 自动剔除非股票代码、价格断层异常和失效止损标的")
     print(f"")
 
     # Position sizing
     sizing_data = []
+    filtered_out = []
     for rank_i, (_, row) in enumerate(picks.iterrows()):
+        if len(sizing_data) >= cfg.n_picks:
+            break
         sym = row[sym_col]
         if sym not in today_prices.index:
             continue
+
+        if market == "us":
+            reject_reason = _us_rejection_reason(sym, us_metadata.get(sym), us_quality.get(sym))
+            if reject_reason is not None:
+                filtered_out.append((sym, reject_reason))
+                continue
+        elif not is_cn_tradable_symbol(sym):
+            filtered_out.append((sym, _format_filter_reason("cn_untradable_board")))
+            continue
+
         close = today_prices.loc[sym, "close"]
         atr = atr_today.loc[sym] if sym in atr_today.index else close * 0.03
         if pd.isna(atr) or atr <= 0:
@@ -311,9 +512,15 @@ def show_today(market: str, cfg: StrategyConfig, as_of: str | None = None):
         target = round(close + 3 * atr, 2)
         if market == "cn":
             stop = max(stop, round(close * 0.90, 2))
+        else:
+            stop = max(stop, round(close * US_STOP_FLOOR_PCT, 2), 0.01)
 
-        stock_name = name_map.get(sym, sym)
-        rank_weight = cfg.n_picks - rank_i
+        stock_name = (
+            name_map.get(sym, sym)
+            if market == "cn"
+            else us_metadata.get(sym, {}).get("name", sym)
+        )
+        rank_weight = cfg.n_picks - len(sizing_data)
         sizing_data.append({
             "sym": sym, "name": stock_name,
             "close": close, "stop": stop, "target": target,
@@ -322,21 +529,32 @@ def show_today(market: str, cfg: StrategyConfig, as_of: str | None = None):
         })
 
     if not sizing_data:
-        print("  No valid picks")
+        print("  No valid picks after data quality filters")
+        if filtered_out:
+            print("")
+            print(f"  数据清洗剔除了 {len(filtered_out)} 个候选标的:")
+            for sym, reason in filtered_out[:8]:
+                print(f"    - {sym}: {reason}")
         return
 
     total_w = sum(d["raw_weight"] for d in sizing_data)
     for d in sizing_data:
         d["weight"] = d["raw_weight"] / total_w * 100
 
-    print(f"  {'#':>3s} {'代码':<12s} {'名称':<10s} {'买入价':>8s} {'止损':>8s} {'止盈':>8s} {'仓位':>6s}")
+    print(f"  {'#':>3s} {'代码':<12s} {'名称':<10s} {'参考价':>8s} {'风控线':>8s} {'观察上沿':>8s} {'权重':>6s}")
     print(f"  {'─'*62}")
 
     for i, d in enumerate(sizing_data):
         name_display = d["name"][:8]  # truncate long names
         print(f"  {i+1:>3d} {d['sym']:<12s} {name_display:<10s} {d['close']:>8.2f} {d['stop']:>8.2f} {d['target']:>8.2f} {d['weight']:>5.1f}%")
 
-    print(f"\n  信号强度: #1 最强 → {sizing_data[0]['weight']:.0f}% 仓位, #{len(sizing_data)} 最弱 → {sizing_data[-1]['weight']:.0f}% 仓位")
+    print(f"\n  信号强度: #1 最强 → {sizing_data[0]['weight']:.0f}% 研究权重, #{len(sizing_data)} 最弱 → {sizing_data[-1]['weight']:.0f}% 研究权重")
+    if filtered_out:
+        print(f"  数据清洗: 已剔除 {len(filtered_out)} 个异常候选")
+        for sym, reason in filtered_out[:8]:
+            print(f"    - {sym}: {reason}")
+        if len(filtered_out) > 8:
+            print(f"    - 其余 {len(filtered_out) - 8} 个已省略")
 
 
 def main():

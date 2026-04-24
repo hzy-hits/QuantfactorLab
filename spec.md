@@ -293,11 +293,11 @@ When a factor achieves `status = 'promoted'`:
 ## 5. Data Sources
 
 Reads from existing pipeline databases (read-only):
-- **US**: `/home/ivena/coding/python/quant-research-v1/data/quant.duckdb`
-- **CN**: `/home/ivena/coding/rust/quant-research-cn/data/quant_cn.duckdb`
+- **US**: `$QUANT_US_ROOT/data/quant.duckdb`
+- **CN**: `$QUANT_CN_ROOT/data/quant_cn.duckdb`
 
 Own database:
-- **Factor Lab**: `/home/ivena/coding/python/factor-lab/data/factor_lab.duckdb`
+- **Factor Lab**: `<project-root>/data/factor_lab.duckdb`
 
 ## 6. Project Structure
 

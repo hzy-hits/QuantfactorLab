@@ -193,11 +193,8 @@ def _compute_fold(
     avg_turnover = float(ls_df["turnover"].dropna().mean()) if len(ls_df["turnover"].dropna()) > 0 else 0.0
 
     # Cost-adjusted daily returns (5-day fwd divided by 5 to get ~daily)
-    # Auto-detect profitable direction: if Q5-Q1 is negative on average,
-    # flip to Q1-Q5 (short top quintile, long bottom quintile).
-    raw_daily_ls = ls_df["ls_return"].values / 5.0
-    direction = np.sign(np.mean(raw_daily_ls)) if abs(np.mean(raw_daily_ls)) > 1e-8 else 1.0
-    daily_ls = raw_daily_ls * direction
+    # Always use raw Q5-Q1 direction — no auto-flip, which would be IS overfitting.
+    daily_ls = ls_df["ls_return"].values / 5.0
     cost_adj = daily_ls - avg_turnover * cost_per_trade
     sharpe = float(np.mean(cost_adj) / np.std(cost_adj) * np.sqrt(252)) if np.std(cost_adj) > 1e-10 else 0.0
 

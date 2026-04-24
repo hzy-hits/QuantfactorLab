@@ -8,6 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import argparse
 import numpy as np
 import pandas as pd
 import duckdb
@@ -110,11 +111,21 @@ def run_diagnostics(market: str):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Run SigReg diagnostics for one or both markets.")
+    parser.add_argument(
+        "--market",
+        choices=["cn", "us", "all"],
+        default="all",
+        help="Which market to diagnose.",
+    )
+    args = parser.parse_args()
+
     print("=" * 50)
     print("  SigReg Factor Diagnostics")
     print("=" * 50)
 
-    for market in ["cn", "us"]:
+    markets = ["cn", "us"] if args.market == "all" else [args.market]
+    for market in markets:
         try:
             run_diagnostics(market)
         except Exception as e:

@@ -40,11 +40,15 @@ Infix: + - * /    Unary: -
 ### Max expression depth: 4
 ### Max expression length: 200 characters
 
-## Available features (only use these — others will cause errors)
-# Price: close, open, high, low, ret_1d, ret_5d, ret_20d
-# Volume: volume, amount (CN only)
-# CN-only: turnover_rate, pe_ttm, pb, ps_ttm, market_cap, circ_market_cap
-# US-only: (price + volume only — no fundamentals in real-time)
+## Available features (ONLY use these — anything else causes immediate FAIL)
+# Price: close, open, high, low
+# Returns: ret_1d, ret_5d, ret_20d
+# Volume: volume, volume_ratio
+# CN-only (from daily_basic): amount, turnover_rate, pe_ttm, pb, ps_ttm, market_cap, circ_market_cap
+# US: price + volume only — NO fundamentals, NO amount, NO turnover_rate
+#
+# WARNING: If your formula references a feature not listed above, it WILL fail.
+# Do NOT guess features. Only use what is listed here.
 
 ## IMPORTANT: What we know works and what doesn't
 
@@ -94,6 +98,7 @@ def build_system_prompt(
     market: str,
     regime_dist: dict[str, float] | None = None,
     existing_factors: list[dict] | None = None,
+    session_context: str | None = None,
 ) -> str:
     """Build the system prompt with DSL reference, market context, and constraints.
 
@@ -116,6 +121,20 @@ def build_system_prompt(
         if market == "cn"
         else "Transaction cost: ~0.1% round-trip. Turnover still matters but less punishing."
     )
+
+    if market == "cn":
+        feature_reminder = (
+            "\n## YOUR AVAILABLE FEATURES (CN)\n"
+            "close, open, high, low, volume, volume_ratio, ret_1d, ret_5d, ret_20d, "
+            "amount, turnover_rate, pe_ttm, pb, ps_ttm, market_cap, circ_market_cap\n"
+            "DO NOT use any feature not in this list.\n"
+        )
+    else:
+        feature_reminder = (
+            "\n## YOUR AVAILABLE FEATURES (US)\n"
+            "close, open, high, low, volume, volume_ratio, ret_1d, ret_5d, ret_20d\n"
+            "DO NOT use amount, turnover_rate, pe_ttm, or any fundamental — they do NOT exist for US.\n"
+        )
 
     regime_section = ""
     if regime_dist:
@@ -141,6 +160,11 @@ def build_system_prompt(
                 note = f.get("note", "")
                 existing_section += f"- {f['name']}: `{f['formula']}` — {note}\n"
 
+    session_section = ""
+    if session_context:
+        session_section = "\n## Resumable Session Context\n"
+        session_section += session_context.strip() + "\n"
+
     return f"""\
 You are a quantitative researcher mining alpha factors for {market_label}.
 
@@ -160,8 +184,10 @@ and iterate based on IS backtest feedback. You have a limited experiment budget 
 {DSL_REFERENCE}
 
 {cost_note}
+{feature_reminder}
 {regime_section}
 {existing_section}
+{session_section}
 
 ## Response Format (STRICT — always use this exact format)
 HYPOTHESIS: <1-2 sentences explaining the economic logic>

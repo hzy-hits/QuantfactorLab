@@ -18,6 +18,8 @@ import argparse
 import hashlib
 import json
 import logging
+import os
+import subprocess
 import sys
 import time
 import uuid
@@ -41,6 +43,7 @@ from src.agent.prompts import (
     parse_agent_response,
     ParsedResponse,
 )
+from src.autoresearch.session_state import load_session_context
 from src.agent.backends import call_agent
 from src.paths import FACTOR_LAB_DB, QUANT_CN_DB, QUANT_US_DB
 
@@ -230,17 +233,23 @@ def _append_experiment_rows(
     market: str,
     experiments: list[dict],
     top3_oos: list[dict],
+    experiments_file: Path = EXPERIMENTS_FILE,
 ) -> None:
     if not experiments:
         return
 
-    if EXPERIMENTS_FILE.exists():
-        existing_text = EXPERIMENTS_FILE.read_text(encoding="utf-8", errors="replace")
+    if experiments_file.exists():
+        existing_text = experiments_file.read_text(encoding="utf-8", errors="replace")
         if f'"session_id": "{session_id}"' in existing_text:
             return
 
     oos_by_formula = {
-        exp["formula"]: "PASS" if exp.get("oos_pass") else "FAIL"
+        exp["formula"]: {
+            "oos": "PASS" if exp.get("oos_pass") else "FAIL",
+            "checks_status": exp.get("checks_status", "skipped"),
+            "decision": exp.get("decision", "revert"),
+            "status": exp.get("status", "evaluated"),
+        }
         for exp in top3_oos
     }
     rows = []
@@ -261,23 +270,112 @@ def _append_experiment_rows(
             "status": exp.get("status", "evaluated"),
             "eval_seconds": round(float(exp.get("eval_seconds", 0.0)), 1),
         }
-        oos = oos_by_formula.get(exp.get("formula", ""))
-        if oos is not None:
-            row["oos"] = oos
+        row["decision"] = exp.get("decision", "revert")
+        row["status"] = exp.get("status", row["status"])
+        for field in ("session_branch", "base_ref", "merge_base", "head_commit", "session_log"):
+            if exp.get(field):
+                row[field] = exp[field]
+        oos_info = oos_by_formula.get(exp.get("formula", ""))
+        if oos_info is not None:
+            row["oos"] = oos_info["oos"]
+            row["checks_status"] = oos_info["checks_status"]
+            row["decision"] = oos_info["decision"]
+            row["status"] = oos_info["status"]
         rows.append(json.dumps(row, ensure_ascii=False))
 
     prefix = ""
-    if EXPERIMENTS_FILE.exists() and EXPERIMENTS_FILE.stat().st_size > 0:
-        last_byte = EXPERIMENTS_FILE.read_bytes()[-1:]
+    if experiments_file.exists() and experiments_file.stat().st_size > 0:
+        last_byte = experiments_file.read_bytes()[-1:]
         if last_byte != b"\n":
             prefix = "\n"
 
-    with EXPERIMENTS_FILE.open("a", encoding="utf-8") as fh:
+    experiments_file.parent.mkdir(parents=True, exist_ok=True)
+    with experiments_file.open("a", encoding="utf-8") as fh:
         if prefix:
             fh.write(prefix)
         for row in rows:
             fh.write(row)
             fh.write("\n")
+
+
+def _append_journal_entry(
+    journal_path: Path | None,
+    session_id: str,
+    market: str,
+    experiments: list[dict],
+    top3_oos: list[dict],
+) -> None:
+    if journal_path is None:
+        return
+
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    passed = [exp for exp in top3_oos if exp.get("oos_pass")]
+    lines = [
+        "",
+        f"## Session {session_id} — {market.upper()}",
+        f"- Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"- Experiments run: {len(experiments)}",
+        f"- OOS passed: {len(passed)}/{len(top3_oos)}",
+    ]
+    if passed:
+        winners = ", ".join(exp["name"] for exp in passed)
+        lines.append(f"- Passing factors: {winners}")
+    else:
+        lines.append("- Passing factors: none")
+
+    with journal_path.open("a", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+        fh.write("\n")
+
+
+def _git_output(args: list[str], repo_root: Path) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return result.stdout.strip()
+
+
+def _detect_branch_context(repo_root: Path) -> dict[str, str]:
+    try:
+        branch = _git_output(["rev-parse", "--abbrev-ref", "HEAD"], repo_root)
+        head_commit = _git_output(["rev-parse", "HEAD"], repo_root)
+    except Exception:
+        return {
+            "session_branch": "",
+            "base_ref": "",
+            "merge_base": "",
+            "head_commit": "",
+        }
+
+    base_ref = ""
+    merge_base = ""
+    candidates = ["origin/main", "origin/master", "main", "master"]
+    for candidate in candidates:
+        try:
+            _git_output(["rev-parse", "--verify", candidate], repo_root)
+            base_ref = candidate
+            break
+        except Exception:
+            continue
+
+    if base_ref:
+        try:
+            merge_base = _git_output(["merge-base", "HEAD", base_ref], repo_root)
+        except Exception:
+            merge_base = ""
+
+    return {
+        "session_branch": branch,
+        "base_ref": base_ref,
+        "merge_base": merge_base,
+        "head_commit": head_commit,
+    }
 
 
 def _compute_dsl_factor(
@@ -618,14 +716,26 @@ class FactorSession:
         budget: int = 50,
         db_path: str | None = None,
         model: str = "claude-opus-4-6",
+        time_budget_minutes: int | None = None,
+        session_context_path: Path | None = None,
+        experiments_file: Path | None = None,
+        journal_path: Path | None = None,
+        checks_script_path: Path | None = None,
     ):
         self.market = market
         self.budget = budget
         self.model = model
+        self.time_budget_minutes = time_budget_minutes
+        self.session_context_path = session_context_path
+        self.experiments_file = experiments_file or EXPERIMENTS_FILE
+        self.journal_path = journal_path
+        self.checks_script_path = checks_script_path
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
         self.cfg = MARKET_CONFIGS[market]
         self.experiments: list[dict] = []
         self._client = None
+        self.repo_root = Path(__file__).resolve().parents[2]
+        self.branch_context = _detect_branch_context(self.repo_root)
 
     def _load_existing_factors(self) -> list[dict]:
         """Load promoted + recently retired factors from registry for agent context."""
@@ -672,7 +782,13 @@ class FactorSession:
         print(f"=== Factor Lab Session: {self.market.upper()} ===")
         print(f"Session ID: {self.session_id}")
         print(f"Budget: {self.budget} experiments")
+        if self.time_budget_minutes is not None:
+            print(f"Time budget: {self.time_budget_minutes} minutes")
+        if self.branch_context.get("session_branch"):
+            print(f"Branch: {self.branch_context['session_branch']}")
         print()
+
+        started_at = time.time()
 
         # Load data
         print("Loading prices...")
@@ -696,10 +812,16 @@ class FactorSession:
             market=self.market,
             regime_dist=None,  # TODO: compute from data
             existing_factors=existing_factors,
+            session_context=load_session_context(self.session_context_path),
         )
 
         # Main experiment loop
         for exp_i in range(self.budget):
+            if self.time_budget_minutes is not None:
+                elapsed_minutes = (time.time() - started_at) / 60.0
+                if elapsed_minutes >= self.time_budget_minutes:
+                    print(f"Time budget reached after {elapsed_minutes:.1f} minutes. Stopping session.")
+                    break
             budget_remaining = self.budget - exp_i - 1
             exp_started = time.time()
 
@@ -734,8 +856,10 @@ class FactorSession:
                     "gates_passed": False,
                     "gate_details": {},
                     "status": "parse_error",
+                    "decision": "revert",
                     "eval_seconds": time.time() - exp_started,
                     "error": "parse_error",
+                    **self.branch_context,
                 })
                 continue
 
@@ -771,8 +895,10 @@ class FactorSession:
                     "gates_passed": False,
                     "gate_details": {},
                     "status": "compute_error",
+                    "decision": "revert",
                     "eval_seconds": time.time() - exp_started,
                     "error": "compute_error",
+                    **self.branch_context,
                 })
                 continue
 
@@ -823,10 +949,13 @@ class FactorSession:
                     }
                     for f in bt_result.fold_metrics
                 ],
-                "status": "evaluated",
+                "status": "candidate" if gate_result.passed else "reverted",
+                "decision": "candidate" if gate_result.passed else "revert",
                 "eval_seconds": time.time() - exp_started,
                 # Keep factor_df reference for potential OOS check
                 "_factor_df": factor_df,
+                "checks_status": "skipped",
+                **self.branch_context,
             }
             self.experiments.append(exp_record)
             print()
@@ -853,7 +982,25 @@ class FactorSession:
                 market=self.market,
                 cost_per_trade=self.cfg["cost_per_trade"],
             )
+            checks_status = "skipped"
+            decision = "revert"
+            status = "reverted"
+            if oos_pass:
+                checks_status = self._run_checks()
+                if checks_status == "passed":
+                    decision = "keep"
+                    status = "kept"
+                elif checks_status == "skipped":
+                    decision = "keep"
+                    status = "kept"
+                else:
+                    decision = "revert"
+                    status = "checks_failed"
             print(f"  {exp['name']}: IS IC={exp['is_ic']:.4f}, OOS={'PASS' if oos_pass else 'FAIL'}")
+            exp["oos"] = "PASS" if oos_pass else "FAIL"
+            exp["checks_status"] = checks_status
+            exp["decision"] = decision
+            exp["status"] = status
             top3_oos.append({
                 "name": exp["name"],
                 "formula": exp["formula"],
@@ -861,6 +1008,9 @@ class FactorSession:
                 "is_ic": exp["is_ic"],
                 "is_ic_ir": exp["is_ic_ir"],
                 "oos_pass": oos_pass,
+                "checks_status": checks_status,
+                "decision": decision,
+                "status": status,
             })
 
         # Clean up internal references before returning
@@ -868,7 +1018,20 @@ class FactorSession:
             exp.pop("_factor_df", None)
 
         summary = self._build_summary(top3_oos)
-        _append_experiment_rows(self.session_id, self.market, self.experiments, top3_oos)
+        _append_experiment_rows(
+            self.session_id,
+            self.market,
+            self.experiments,
+            top3_oos,
+            experiments_file=self.experiments_file,
+        )
+        _append_journal_entry(
+            self.journal_path,
+            self.session_id,
+            self.market,
+            self.experiments,
+            top3_oos,
+        )
         print()
         print(summary)
 
@@ -901,11 +1064,12 @@ class FactorSession:
             f"- Budget: {self.budget} experiments",
             f"- Experiments run: {len(self.experiments)}",
             f"- Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            f"- Branch: {self.branch_context.get('session_branch') or 'n/a'}",
             f"",
             f"## All Experiments",
             f"",
-            f"| # | Name | Formula | IC | IC_IR | Sharpe | Gates |",
-            f"|---|------|---------|-----|-------|--------|-------|",
+            f"| # | Name | Formula | IC | IC_IR | Sharpe | Gates | Decision |",
+            f"|---|------|---------|-----|-------|--------|-------|----------|",
         ]
 
         for i, exp in enumerate(self.experiments, 1):
@@ -914,7 +1078,7 @@ class FactorSession:
             lines.append(
                 f"| {i} | {exp.get('name', '?')} | `{formula_short}` | "
                 f"{exp.get('is_ic', 0):.4f} | {exp.get('is_ic_ir', 0):.3f} | "
-                f"{exp.get('is_sharpe', 0):.3f} | {gates_str} |"
+                f"{exp.get('is_sharpe', 0):.3f} | {gates_str} | {exp.get('decision', 'revert')} |"
             )
 
         lines.extend([
@@ -951,6 +1115,26 @@ class FactorSession:
 
         return "\n".join(lines)
 
+    def _run_checks(self) -> str:
+        if self.checks_script_path is None or not self.checks_script_path.exists():
+            return "skipped"
+        try:
+            subprocess.run(
+                [str(self.checks_script_path)],
+                cwd=self.repo_root,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+                env=os.environ.copy(),
+            )
+            return "passed"
+        except Exception as exc:
+            logger.warning(f"Autoresearch checks failed: {exc}")
+            return "failed"
+
 
 # ---------------------------------------------------------------------------
 # CLI entry point
@@ -962,6 +1146,11 @@ def main():
     parser.add_argument("--budget", type=int, default=50)
     parser.add_argument("--model", default="claude-opus-4-6")
     parser.add_argument("--output", default=None, help="Output markdown path")
+    parser.add_argument("--time-budget-minutes", type=int, default=None)
+    parser.add_argument("--session-context", default=None, help="Path to autoresearch.md session context")
+    parser.add_argument("--experiments-file", default=None, help="Path to session-local autoresearch.jsonl")
+    parser.add_argument("--journal", default=None, help="Path to research journal for session summaries")
+    parser.add_argument("--checks-script", default=None, help="Path to autoresearch.checks.sh")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -970,6 +1159,11 @@ def main():
         market=args.market,
         budget=args.budget,
         model=args.model,
+        time_budget_minutes=args.time_budget_minutes,
+        session_context_path=Path(args.session_context) if args.session_context else None,
+        experiments_file=Path(args.experiments_file) if args.experiments_file else None,
+        journal_path=Path(args.journal) if args.journal else None,
+        checks_script_path=Path(args.checks_script) if args.checks_script else None,
     )
     result = session.run()
 

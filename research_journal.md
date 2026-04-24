@@ -114,3 +114,87 @@ Legend: . = tested weak, + = decent IC, ++ = strong IC, +++ = promoted, ! = stro
   - CN: IC=0.022, IC_IR=0.189, 8 factors
   - US: IC=0.052, IC_IR=0.451, 17 factors (massive improvement from IC=0.033, IC_IR=0.358)
 - **Key factors by weight in US composite**: smart_trend_20_40 (0.09), bullish_close_quality_40 (0.07), volume_stability_20 (0.07), trend_quality_40 (0.07), range_price_decorr_60 (0.07)
+
+## Session 20260417_000844_b19035 — US
+- Timestamp: 2026-04-17 00:09
+- Experiments run: 1
+- OOS passed: 0/0
+- Passing factors: none
+
+## Session 20260417_000930_170066 — US
+- Timestamp: 2026-04-17 00:10
+- Experiments run: 1
+- OOS passed: 1/1
+- Passing factors: relvol_uniformity_20
+
+## Session 20260417_065123_322a1d — US
+- Timestamp: 2026-04-17 06:51
+- Experiments run: 1
+- OOS passed: 0/0
+- Passing factors: none
+
+## Session 20260417_060002_0396c3 — CN
+- Timestamp: 2026-04-17 06:56
+- Experiments run: 27
+- OOS passed: 3/3
+- Passing factors: float_quiet_absorb_20, amount_compress_absorption_20_60, log_amount_change_stability_20
+
+## Session 20260417_140002_bdb741 — CN
+- Timestamp: 2026-04-17 14:56
+- Experiments run: 22
+- OOS passed: 3/3
+- Passing factors: autocorr_smooth_amount_20, turnover_flow_smooth_20, turnover_stability_20
+
+## Session 20260420_060002_e676ef — CN
+- Timestamp: 2026-04-20 06:57
+- Experiments run: 20
+- OOS passed: 3/3
+- Passing factors: autocorr_smooth_turnover_20, turnover_stability_20, anti_autocorr_amount_compress_20_60
+
+## Session 20260420_140003_bf56e4 — CN
+- Timestamp: 2026-04-20 14:55
+- Experiments run: 22
+- OOS passed: 3/3
+- Passing factors: autocorr_smooth_turnover_20, turnover_stability_20, autocorr_amount_floor_20
+
+## Session 20260421_060002_c0a60a — CN
+- Timestamp: 2026-04-21 06:57
+- Experiments run: 22
+- OOS passed: 3/3
+- Passing factors: quiet_trend_turnover_regime_20_120, smooth_turnover_flow_20, turnover_stability_20
+
+## Session 20260421_140002_0b99f7 — CN
+- Timestamp: 2026-04-21 14:57
+- Experiments run: 23
+- OOS passed: 3/3
+- Passing factors: quiet_weekly_amount_flow_20, smooth_turnover_flow_20, weekly_amount_even_turnover
+
+## Session 20260422_060001_ddb78d — CN
+- Timestamp: 2026-04-22 06:57
+- Experiments run: 19
+- OOS passed: 2/3
+- Passing factors: anti_autocorr_amount_corridor_20, smooth_turnover_flow_20
+
+## Session 20260422_140002_107fce — CN
+- Timestamp: 2026-04-22 14:57
+- Experiments run: 21
+- OOS passed: 3/3
+- Passing factors: steady_flow_underreaction_20, anti_autocorr_amount_corridor_20, float_even_absorption_20
+
+## Session 20260423_060002_a3c36a — CN
+- Timestamp: 2026-04-23 06:55
+- Experiments run: 19
+- OOS passed: 2/3
+- Passing factors: float_even_absorption_20, anti_autocorr_amtflow_smooth_20
+
+## Session 20260423_140002_85b7e5 — CN
+- Timestamp: 2026-04-23 14:57
+- Experiments run: 19
+- OOS passed: 3/3
+- Passing factors: anti_autocorr_float_value_stability_20, anti_autocorr_float_flow_smooth_20, turnover_stability_20
+
+## Session 20260424_060002_bcd025 — CN
+- Timestamp: 2026-04-24 06:55
+- Experiments run: 20
+- OOS passed: 3/3
+- Passing factors: anti_autocorr_amount_corridor_20, anti_autocorr_float_value_stability_20, log_amount_change_stability_20_5
